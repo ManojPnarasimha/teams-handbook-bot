@@ -2,7 +2,7 @@
 Build the local vector index from your PDF. Run once, and again whenever the PDF changes.
 
 Usage:
-    python ingest.py document/employee_handbook.pdf
+    python ingest.py document/Employee Handbook 2026.pdf
 """
 import sys
 from rag import build_index

@@ -99,6 +99,11 @@ is verifiable.
 2. Copy `.env.example` to `.env` and fill in:
    - `GROQ_API_KEY`
    - `MicrosoftAppId`, `MicrosoftAppPassword`, `MicrosoftAppType`, `MicrosoftAppTenantId`
+
+   ### pip install --upgrade certifi
+
+   ### export SSL_CERT_FILE=$(python3 -c "import certifi; print(certifi.where())")
+
 3. Build the vector index from your PDF (re-run whenever the document changes):
    ```powershell
    python ingest.py document\employee_handbook.pdf
