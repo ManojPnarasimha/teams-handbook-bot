@@ -1,0 +1,67 @@
+services:
+  - type: web
+    name: tricongpt
+    runtime: python
+    plan: free
+    autoDeploy: true
+    # apt packages are required by unstructured[pdf] hi_res: poppler (PDF render),
+    # tesseract (OCR fallback), libmagic (file-type detection). Render's native
+    # Python build runs as root, so apt-get works directly in buildCommand.
+    buildCommand: >-
+      apt-get update &&
+      apt-get install -y poppler-utils tesseract-ocr libmagic1 &&
+      pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      # Supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: STORAGE_BUCKET
+        value: org-docs
+
+      # LLM provider — set at least one key. Optional LLM_PROVIDER forces the choice.
+      - key: LLM_PROVIDER
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+
+      # Embeddings — must produce 1536-dim vectors to match documents.embedding.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+
+      # Bot Framework / Azure Bot Service
+      - key: MICROSOFT_APP_ID
+        sync: false
+      - key: MICROSOFT_APP_PASSWORD
+        sync: false
+      - key: MICROSOFT_APP_TYPE
+        value: MultiTenant
+      - key: MICROSOFT_APP_TENANT_ID
+        sync: false
+
+      # Supabase Database Webhook shared secret
+      - key: WEBHOOK_SECRET
+        sync: false
+
+      # Behaviour knobs
+      - key: RAG_TOP_K
+        value: "5"
+      - key: RAG_SIMILARITY_THRESHOLD
+        value: "0.72"
+      - key: SHORT_TERM_LIMIT
+        value: "10"
+      - key: SUMMARY_EVERY_TURNS
+        value: "20"
+      - key: LOG_LEVEL
+        value: INFO

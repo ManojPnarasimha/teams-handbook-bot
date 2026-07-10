@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.0.0",
+  "id": "00000000-0000-0000-0000-000000000000",
+  "packageName": "com.tricon.tricongpt",
+  "developer": {
+    "name": "Tricon",
+    "websiteUrl": "https://example.com",
+    "privacyUrl": "https://example.com/privacy",
+    "termsOfUseUrl": "https://example.com/termsofuse"
+  },
+  "name": {
+    "short": "TriconGPT",
+    "full": "TriconGPT - Internal Assistant"
+  },
+  "description": {
+    "short": "Internal AI assistant for Tricon employees",
+    "full": "TriconGPT is an internal AI assistant that answers employee questions using company documents. It remembers context per conversation and can start a fresh session on request."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#4F46E5",
+  "bots": [
+    {
+      "botId": "00000000-0000-0000-0000-000000000000",
+      "scopes": ["personal"],
+      "isNotificationOnly": false,
+      "supportsCalling": false,
+      "supportsVideo": false,
+      "supportsFiles": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": []
+}
