@@ -1,126 +1,197 @@
-"""
-Microsoft Teams RAG bot server (Bot Framework SDK + aiohttp).
+"""FastAPI app for the Teams bot and sync endpoint."""
 
-Free stack:
-  - Runs on your own machine (or any free host)
-  - Azure Bot registration: Free F0 tier
-  - Exposed to the internet with a free dev tunnel (see SETUP.md)
+from __future__ import annotations
 
-Env vars:
-  MicrosoftAppId        - from your Azure Bot registration
-  MicrosoftAppPassword  - client secret
-  MicrosoftAppType      - "SingleTenant" (default for new bots) or "MultiTenant"
-  MicrosoftAppTenantId  - your tenant ID (required for SingleTenant)
-  GROQ_API_KEY          - free key from https://console.groq.com
-"""
-
+import logging
 import os
-import sys
-import traceback
-from datetime import datetime
+import uuid
+from typing import Any
 
-from aiohttp import web
+from dotenv import load_dotenv
+
+load_dotenv()  # must run before any os.getenv() reads below
+
 from botbuilder.core import (
     ActivityHandler,
     TurnContext,
-    ConversationState,
-    MemoryStorage,
 )
-from botbuilder.core.integration import aiohttp_error_middleware
-from botbuilder.integration.aiohttp import (
-    CloudAdapter,
-    ConfigurationBotFrameworkAuthentication,
+from botbuilder.integration.aiohttp import CloudAdapter, ConfigurationBotFrameworkAuthentication
+from botbuilder.schema import Activity, ActivityTypes, ConversationReference
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse, PlainTextResponse
+
+import ingest
+from memory import (
+    get_or_create_conversation,
+    save_conversation_reference,
+    upsert_employee,
 )
-from botbuilder.schema import Activity, ActivityTypes
+from rag import answer_question
 
-from rag import generate_answer
-
-
-class Config:
-    """Read config from environment (Bot Framework auth reads these names)."""
-    PORT = int(os.environ.get("PORT", 3978))
-    APP_ID = os.environ.get("MicrosoftAppId", "")
-    APP_PASSWORD = os.environ.get("MicrosoftAppPassword", "")
-    APP_TYPE = os.environ.get("MicrosoftAppType", "SingleTenant")
-    APP_TENANTID = os.environ.get("MicrosoftAppTenantId", "")
+# Logging
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s",
+)
 
 
-class HandbookBot(ActivityHandler):
-    def __init__(self, conversation_state: ConversationState):
-        self.conversation_state = conversation_state
-        self.history_accessor = conversation_state.create_property("history")
+class _RequestIdFilter(logging.Filter):
+    def filter(self, record):
+        if not hasattr(record, "request_id"):
+            record.request_id = "-"
+        return True
 
-    async def on_message_activity(self, turn_context: TurnContext):
-        question = (turn_context.activity.text or "").strip()
-        # Strip the @mention if used in a channel
-        question = TurnContext.remove_recipient_mention(turn_context.activity) or question
-        question = question.strip()
 
-        if not question:
-            await turn_context.send_activity("Ask me anything about the handbook!")
+for h in logging.getLogger().handlers:
+    h.addFilter(_RequestIdFilter())
+
+logger = logging.getLogger("app")
+
+
+# Bot config
+class _BotConfig:
+    """Env-backed CloudAdapter config."""
+
+    APP_ID = os.getenv("MICROSOFT_APP_ID", "")
+    APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD", "")
+    APP_TYPE = os.getenv("MICROSOFT_APP_TYPE", "MultiTenant")
+    APP_TENANTID = os.getenv("MICROSOFT_APP_TENANT_ID", "")
+
+
+_bot_config = _BotConfig()
+_adapter = CloudAdapter(ConfigurationBotFrameworkAuthentication(_bot_config))
+
+
+async def _on_error(context: TurnContext, error: Exception) -> None:
+    logger.exception("Unhandled turn error: %s", error)
+    await context.send_activity(
+        "Sorry, something went wrong on my side. Please try again in a moment."
+    )
+
+
+_adapter.on_turn_error = _on_error
+
+
+# Bot handler
+# Shared secret for scheduled sync jobs.
+SYNC_SECRET = os.getenv("SYNC_SECRET", "")
+
+
+class OrgBot(ActivityHandler):
+    async def on_message_activity(self, turn_context: TurnContext) -> None:
+        activity = turn_context.activity
+        text = (activity.text or "").strip()
+        if not text:
             return
 
-        # typing indicator while we think
+        # Show typing first so Teams feels responsive.
         await turn_context.send_activity(Activity(type=ActivityTypes.typing))
 
-        history = await self.history_accessor.get(turn_context, lambda: [])
+        # Use the stable Teams user id from aad_object_id.
+        sender = activity.from_property
+        if sender is None:
+            logger.warning("Dropping message with no from_property")
+            return
+        aad_object_id = getattr(sender, "aad_object_id", None) or sender.id
+        name = sender.name
+        email = None  # populate later if channel data exposes it
+
+        req_id = str(uuid.uuid4())
+        extra = {"request_id": req_id}
+        logger.info("turn start user=%s len=%d", aad_object_id, len(text), extra=extra)
+
+        employee_id = await upsert_employee(aad_object_id, name, email)
+        conversation_id = await get_or_create_conversation(employee_id, channel="teams")
+
+        # Save the conversation reference for later proactive messages.
+        ref = TurnContext.get_conversation_reference(activity)
         try:
-            answer = await generate_answer(question, history)
-        except FileNotFoundError as e:
-            answer = str(e)
+            ref_dict = ref.serialize() if hasattr(ref, "serialize") else _cr_to_dict(ref)
+            await save_conversation_reference(employee_id, ref_dict)
         except Exception as e:
-            answer = f"Sorry, something went wrong: {e}"
+            logger.warning("Failed to persist conversation reference: %s", e, extra=extra)
 
-        # remember the exchange for follow-up questions
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": answer})
-        await self.history_accessor.set(turn_context, history[-10:])
-        await self.conversation_state.save_changes(turn_context)
-
+        # Run the full RAG turn.
+        answer = await answer_question(employee_id, conversation_id, text)
         await turn_context.send_activity(answer)
+        logger.info("turn done user=%s", aad_object_id, extra=extra)
 
-    async def on_members_added_activity(self, members_added, turn_context: TurnContext):
+    async def on_members_added_activity(self, members_added, turn_context: TurnContext) -> None:
+        recipient = turn_context.activity.recipient
+        recipient_id = recipient.id if recipient else None
         for member in members_added:
-            if member.id != turn_context.activity.recipient.id:
+            if member.id != recipient_id:
                 await turn_context.send_activity(
-                    "Hi! I'm your document assistant. Ask me anything about the "
-                    "employee handbook — leave policy, benefits, notice period, "
-                    "work hours, anything."
+                    "Hi! I'm TriconGPT — ask me anything about company policies or handbook content."
                 )
 
 
-# ---------------------------------------------------------------------------
-# Server wiring
-# ---------------------------------------------------------------------------
-config = Config()
-auth = ConfigurationBotFrameworkAuthentication(config)
-adapter = CloudAdapter(auth)
+def _cr_to_dict(ref: ConversationReference) -> dict[str, Any]:
+    """Small fallback serializer for older SDKs."""
+    return {
+        "activityId": ref.activity_id,
+        "user": {"id": ref.user.id, "name": ref.user.name} if ref.user else None,
+        "bot": {"id": ref.bot.id, "name": ref.bot.name} if ref.bot else None,
+        "conversation": {
+            "id": ref.conversation.id,
+            "conversationType": ref.conversation.conversation_type,
+            "tenantId": ref.conversation.tenant_id,
+        }
+        if ref.conversation
+        else None,
+        "channelId": ref.channel_id,
+        "serviceUrl": ref.service_url,
+    }
 
 
-async def on_error(context: TurnContext, error: Exception):
-    print(f"\n[on_turn_error] {error}", file=sys.stderr)
-    traceback.print_exc()
-    await context.send_activity("The bot hit an error. Check the server logs.")
-
-adapter.on_turn_error = on_error
-
-memory = MemoryStorage()
-conversation_state = ConversationState(memory)
-bot = HandbookBot(conversation_state)
+_bot = OrgBot()
 
 
-async def messages(req: web.Request) -> web.Response:
-    return await adapter.process(req, bot)
+# FastAPI app
+app = FastAPI(title="TriconGPT", version="1.0.0")
 
 
-async def health(req: web.Request) -> web.Response:
-    return web.json_response({"status": "ok", "time": datetime.utcnow().isoformat()})
+@app.get("/healthz")
+async def healthz() -> PlainTextResponse:
+    return PlainTextResponse("ok")
 
 
-app = web.Application(middlewares=[aiohttp_error_middleware])
-app.router.add_post("/api/messages", messages)
-app.router.add_get("/health", health)
+@app.post("/api/messages")
+async def messages(request: Request) -> JSONResponse:
+    """Bot Framework channel endpoint. Delegates to CloudAdapter."""
+    body = await request.json()
+    activity = Activity().deserialize(body)
+    auth_header = request.headers.get("Authorization", "")
+    try:
+        response = await _adapter.process_activity(auth_header, activity, _bot.on_turn)
+        if response:
+            return JSONResponse(content=response.body, status_code=response.status)
+        return JSONResponse(content={}, status_code=status.HTTP_200_OK)
+    except Exception as e:
+        logger.exception("Adapter failed: %s", e)
+        raise HTTPException(status_code=500, detail="Adapter error") from e
 
-if __name__ == "__main__":
-    print(f"Bot running on http://localhost:{config.PORT}/api/messages")
-    web.run_app(app, host="0.0.0.0", port=config.PORT)
+
+# SharePoint sync endpoint
+# Scheduled by Supabase pg_cron + pg_net.
+
+async def _run_sharepoint_sync() -> None:
+    """Run the sync off the request thread."""
+    try:
+        await ingest.sync_from_sharepoint()
+    except Exception as e:
+        logger.exception("SharePoint sync failed: %s", e)
+
+
+@app.post("/internal/sharepoint-sync")
+async def sharepoint_sync(
+    background_tasks: BackgroundTasks,
+    x_sync_secret: str | None = Header(default=None, alias="X-Sync-Secret"),
+) -> JSONResponse:
+    """Trigger SharePoint sync with a shared secret."""
+    if not SYNC_SECRET or x_sync_secret != SYNC_SECRET:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bad secret")
+
+    # Offload the heavy sync work so pg_net closes quickly.
+    background_tasks.add_task(_run_sharepoint_sync)
+    return JSONResponse({"accepted": True})

@@ -1,171 +1,364 @@
-# Employee Handbook Assistant (teams-handbook-bot)
+# TriconGPT — Internal Org Chatbot
 
-A Retrieval-Augmented Generation (RAG) chatbot, deployed as a Microsoft Teams
-bot, that answers employee questions directly from the company handbook —
-with page-level citations and no hallucinated policy.
+Production-grade Retrieval-Augmented Generation (RAG) chatbot for internal
+company use.
 
-## Problem
+- **Chat surface**: Microsoft Teams (via Azure Bot Service)
+- **Deploy target**: Render (FastAPI web service)
+- **DB + vectors**: Supabase Postgres + `pgvector`
+- **Document library**: Microsoft SharePoint (via Microsoft Graph API)
+- **Scheduled ingestion**: Supabase `pg_cron` + `pg_net` (free) → `POST /internal/sharepoint-sync`
+- **LLM**: Groq `llama-3.3-70b-versatile` (default) or Gemini `gemini-2.5-flash`
+- **Embeddings**: Google Gemini `text-embedding-004` (768-dim)
+- **Doc extraction**: `unstructured` (`hi_res`, layout-aware)
 
-Employees routinely ask HR the same recurring questions — leave balance,
-notice period, benefits, work hours — that are already answered in the
-handbook PDF, but few people read a 40+ page document to find one paragraph.
-This creates repetitive interruptions for HR and slow, inconsistent answers
-for employees.
+---
 
-This bot puts the handbook directly inside the tool employees already use
-every day — Microsoft Teams — and answers questions in seconds, grounded
-strictly in the source document, with the page number cited so the answer
-is verifiable.
+## Architecture
 
-## What it does
+```
+Teams  ──►  Azure Bot Service  ──►  Render (FastAPI: /api/messages)
+                                        │
+                                        ├─►  rag.py  ──►  Supabase pgvector
+                                        │                      ▲
+                                        ├─►  memory.py ────────┤
+                                        └─►  llm_client.py (Groq | Gemini)
 
-- Answers natural-language questions about company policy inside a Teams chat.
-- Retrieves only the relevant passages from the handbook before answering —
-  it does not answer from general knowledge, and says so explicitly when the
-  handbook doesn't cover a question.
-- Cites the page number(s) used, so answers are auditable against the source PDF.
-- Retains short conversation history per user, so follow-up questions
-  ("what about part-time employees?") work without repeating context.
+Supabase pg_cron (every 15–30 min, pg_net HTTP POST)
+        │  X-Sync-Secret: <SYNC_SECRET>
+        ▼
+Render /internal/sharepoint-sync
+        │
+        └─►  ingest.sync_from_sharepoint()
+                    │
+                    ├─►  sharepoint_client.list_files()  ──►  Microsoft Graph
+                    └─►  process_file / delete_file_chunks  ──►  Supabase pgvector
+```
 
-## How it works (current implementation)
-
-1. **Ingestion (offline, one-time):** the handbook PDF is parsed, split into
-   overlapping text chunks, and embedded locally using a sentence-transformer
-   model. The resulting vectors are stored in a local index file.
-2. **Retrieval (per question):** the incoming question is embedded and
-   compared against the index via cosine similarity to pull the top matching
-   passages.
-3. **Generation:** the question, retrieved passages, and recent conversation
-   history are sent to an LLM, constrained by a system prompt to answer only
-   from the provided excerpts.
-4. **Delivery:** the answer is returned through the Bot Framework adapter to
-   the Teams conversation.
-
-*(Architecture diagram to be added separately.)*
-
-## Tech stack
-
-| Layer | Technology |
-|---|---|
-| Bot framework | Microsoft Bot Framework SDK (Python) + aiohttp server |
-| Identity / Auth | Microsoft Entra ID App Registration (Single Tenant) via Azure Bot Service |
-| Embeddings | `sentence-transformers` (`all-MiniLM-L6-v2`), run locally |
-| Vector store | numpy index persisted to disk (`data/index.pkl`) |
-| LLM | Groq-hosted Llama 3.3 70B (pluggable — Gemini also supported) |
-| Dev tunneling | Cloudflare Tunnel (local dev only) |
-| Client surface | Microsoft Teams (personal, team, and group chat scopes) |
-
-## What's set up so far
-
-- Azure Bot resource registered (Free tier) with a Single-Tenant Entra ID
-  app registration backing it.
-- Bot server (`app.py`) implemented with the Bot Framework `CloudAdapter`,
-  exposing `POST /api/messages` and `GET /health`.
-- RAG pipeline (`rag.py`, `ingest.py`) implemented and validated end-to-end
-  against the employee handbook PDF via the terminal client (`chat_local.py`).
-- Local server exposed to the internet during development via a Cloudflare
-  Tunnel, wired to the Azure Bot's messaging endpoint.
-- Verified working via Azure's **Test in Web Chat** and directly inside
-  Microsoft Teams.
-
-## Project structure
+## Files
 
 | Path | Purpose |
-|---|---|
-| `app.py` | Bot Framework server — Teams entry point (`/api/messages`) |
-| `rag.py` | Core RAG engine — retrieval + LLM call |
-| `ingest.py` | One-time/PDF-change pipeline: extract → chunk → embed → save index |
-| `chat_local.py` | Terminal chat client for testing the RAG pipeline without Teams/Azure |
-| `document/` | Source PDF(s) to be indexed |
-| `data/` | Generated vector index (gitignored, regenerated via `ingest.py`) |
-| `appPackage/` | Teams app manifest + icons, for sideloading into Teams |
-| `SETUP.md` | Detailed Azure Bot registration + tunnel walkthrough |
+| --- | --- |
+| [app.py](app.py) | FastAPI: `/api/messages`, `/internal/sharepoint-sync`, `/healthz` |
+| [rag.py](rag.py) | Embed query → pgvector search → prompt → LLM |
+| [llm_client.py](llm_client.py) | Provider resolution, grounding prompt, no-context fallback |
+| [memory.py](memory.py) | Per-employee history + rolling summary + proactive refs |
+| [sharepoint_client.py](sharepoint_client.py) | MSAL auth + Graph `list_files()` / `download_file()` |
+| [ingest.py](ingest.py) | `process_file` / `delete_file_chunks` / `sync_from_sharepoint` + CLI |
+| [db_client.py](db_client.py) | Async Supabase client + Gemini embedding helper |
+| [local_chat.py](local_chat.py) | CLI chat loop bypassing Bot Framework |
+| [db/schema.sql](db/schema.sql) | Tables, indexes, `match_documents` RPC |
+| [teams-app-package/README.md](teams-app-package/README.md) | Teams manifest + upload steps |
+| [render.yaml](render.yaml) | Render service definition |
+| [requirements.txt](requirements.txt) | Python deps |
+| [.env.example](.env.example) | All env var names (no values) |
 
-## Prerequisites
+---
 
-- Python 3.10+
-- A Groq API key ([console.groq.com](https://console.groq.com))
-- An Azure Bot resource (Free F0 tier is sufficient) with its App ID, client
-  secret, and tenant ID
-- A Microsoft 365 tenant where custom Teams apps can be sideloaded (see
-  [SETUP.md](SETUP.md) if you don't have one)
+## 1. Prerequisites
 
-## Running it locally
+Install once per machine.
 
-1. Install dependencies:
-   ```powershell
-   pip install -r requirements.txt
+**macOS** (Homebrew):
+
+```bash
+brew install python@3.12 poppler tesseract libmagic
+```
+
+**Debian/Ubuntu**:
+
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  python3.12 python3.12-venv poppler-utils tesseract-ocr libmagic1
+```
+
+`poppler`, `tesseract`, `libmagic` are the native libs `unstructured[pdf]`
+needs for `hi_res` PDF extraction. Render installs the Debian equivalents
+automatically via [render.yaml](render.yaml).
+
+---
+
+## 2. Get your secrets
+
+Fill these into `.env` (copied from [.env.example](.env.example)). Never commit
+`.env` — it is already in [.gitignore](.gitignore).
+
+| Env var | Where to get it |
+| --- | --- |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | Supabase Dashboard → *Project Settings → API*. `SUPABASE_SERVICE_KEY` is the **`service_role`** key (secret). |
+| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey). Required for embeddings and (optionally) chat. |
+| `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys). Only needed if Groq is the chat provider (the default). |
+| `LLM_PROVIDER` | Optional override: `groq` or `gemini`. If unset, Groq wins when both keys are present. |
+| `MICROSOFT_APP_ID`, `MICROSOFT_APP_PASSWORD`, `MICROSOFT_APP_TENANT_ID` | Azure Bot resource → *Configuration* (App ID) and *Certificates & secrets* (App Password) of the associated Entra ID App Registration. |
+| `MICROSOFT_APP_TYPE` | `MultiTenant` or `SingleTenant` — matches how the Bot's App Registration was created. |
+| `SHAREPOINT_TENANT_ID` | Entra ID → your tenant → *Overview* → Tenant ID. |
+| `SHAREPOINT_CLIENT_ID`, `SHAREPOINT_CLIENT_SECRET` | A **dedicated** Entra ID App Registration (separate from the bot's) with application permission `Sites.Selected`. See §5 for the one-time site-grant step. |
+| `SHAREPOINT_SITE_ID` | `GET https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site-path}` in [Graph Explorer](https://developer.microsoft.com/graph/graph-explorer). |
+| `SHAREPOINT_DRIVE_ID` | `GET https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives` — pick the document library you want indexed. |
+| `SHAREPOINT_FOLDER_PATH` | Optional; leave empty for drive root, or e.g. `HR Documents` for a subfolder. |
+| `SHAREPOINT_RECURSIVE` | `1` to walk subfolders; default `0`. |
+| `SYNC_SECRET` | Any long random string. `openssl rand -hex 32` is fine. |
+
+---
+
+## 3. Run locally
+
+### 3a. Install Python deps
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env    # then fill in secrets from §2
+```
+
+### 3b. Apply the Supabase schema
+
+1. Supabase Dashboard → *Database → Extensions* → enable **`vector`**.
+2. Supabase Dashboard → *SQL Editor* → paste [db/schema.sql](db/schema.sql) → run.
+
+### 3c. First-time backfill from SharePoint
+
+Grab whatever is already in the SharePoint library and index it:
+
+```bash
+python ingest.py --backfill
+```
+
+Other ingest commands:
+
+```bash
+# Same diff-sync the scheduled endpoint runs (incremental):
+python ingest.py --sync
+
+# Remove chunks for a single path (e.g. after deleting a file):
+python ingest.py --delete "HR Documents/handbook.pdf"
+```
+
+### 3d. Talk to the bot locally (no Teams needed)
+
+```bash
+python local_chat.py
+```
+
+This hits the same `rag.py` + `memory.py` pipeline against a fake `local-dev-user`
+employee, so you can iterate on retrieval quality without any Azure/Teams setup.
+
+### 3e. Run the web server
+
+```bash
+uvicorn app:app --reload --port 8000
+```
+
+Then:
+
+```bash
+curl http://127.0.0.1:8000/healthz              # → ok
+curl -X POST http://127.0.0.1:8000/internal/sharepoint-sync   # → 401 (correct, no secret)
+curl -X POST -H "X-Sync-Secret: $(grep '^SYNC_SECRET=' .env | cut -d= -f2)" \
+  http://127.0.0.1:8000/internal/sharepoint-sync             # → {"accepted":true}
+```
+
+`GET /docs` renders the FastAPI OpenAPI page.
+
+---
+
+## 4. Deploy to Render
+
+1. Push this repo to GitHub.
+2. Render Dashboard → **New → Web Service** → connect the repo.
+3. Render auto-detects [render.yaml](render.yaml). Set every env var listed in
+   §2 in the Render dashboard (never commit them).
+4. Wait for the first deploy. Verify:
    ```
-2. Copy `.env.example` to `.env` and fill in:
-   - `GROQ_API_KEY`
-   - `MicrosoftAppId`, `MicrosoftAppPassword`, `MicrosoftAppType`, `MicrosoftAppTenantId`
-
-   ### pip install --upgrade certifi
-
-   ### export SSL_CERT_FILE=$(python3 -c "import certifi; print(certifi.where())")
-
-3. Build the vector index from your PDF (re-run whenever the document changes):
-   ```powershell
-   python ingest.py document\employee_handbook.pdf
+   https://<render-app>.onrender.com/healthz   → ok
    ```
-4. Sanity-check the RAG pipeline in isolation, no Teams/Azure needed:
-   ```powershell
-   python chat_local.py
+5. Note the two endpoints for the next steps:
+   - `/api/messages` — for Azure Bot Service
+   - `/internal/sharepoint-sync` — for the Supabase pg_cron job
+
+Note: [render.yaml](render.yaml)'s `buildCommand` installs `poppler-utils`,
+`tesseract-ocr`, and `libmagic1` via `apt-get` before `pip install` so
+`unstructured[pdf]` `hi_res` works on Render's Debian build image.
+
+---
+
+## 5. Wire up SharePoint (one-time Entra ID setup)
+
+Do this once, in the tenant that owns the target SharePoint site.
+
+1. **Create the App Registration** (separate from the bot's own registration):
+   - Azure Portal → Entra ID → *App registrations* → *New registration*.
+   - Any name; single-tenant is fine.
+2. **Grant `Sites.Selected`**:
+   - *API permissions* → *Add* → Microsoft Graph → **Application permissions**
+     → `Sites.Selected` → *Add permission* → **Grant admin consent**.
+3. **Create a client secret**:
+   - *Certificates & secrets* → *New client secret* → save the **value** now
+     (it is shown only once). This is `SHAREPOINT_CLIENT_SECRET`.
+4. **Record IDs**:
+   - *Overview* → **Application (client) ID** = `SHAREPOINT_CLIENT_ID`.
+   - *Overview* → **Directory (tenant) ID** = `SHAREPOINT_TENANT_ID`.
+5. **Grant this app access to the target site** — `Sites.Selected` gives no
+   access until you do this. In [Graph Explorer](https://developer.microsoft.com/graph/graph-explorer)
+   (signed in as an admin):
+   ```http
+   POST https://graph.microsoft.com/v1.0/sites/{SITE_ID}/permissions
+   Content-Type: application/json
+
+   {
+     "roles": ["read"],
+     "grantedToIdentities": [
+       { "application": {
+           "id": "<SHAREPOINT_CLIENT_ID>",
+           "displayName": "TriconGPT Sync"
+       } }
+     ]
+   }
    ```
-5. Start the bot server:
-   ```powershell
-   python app.py
+6. **Find `SHAREPOINT_SITE_ID` / `SHAREPOINT_DRIVE_ID`**:
    ```
-   You should see `Bot running on http://localhost:3978/api/messages`.
-
-## Testing against Azure Bot Service
-
-1. **Expose your local server** with a dev tunnel (e.g. Cloudflare Tunnel or
-   Microsoft `devtunnel`) and copy the HTTPS URL it gives you.
-2. In the Azure Portal, open your Bot resource → **Configuration** → set
-   **Messaging endpoint** to:
+   GET https://graph.microsoft.com/v1.0/sites/{hostname}:/sites/{site-path}
+   GET https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives
    ```
-   https://<your-tunnel-url>/api/messages
-   ```
-3. With `app.py` and the tunnel both running, go to the Bot resource →
-   **Test in Web Chat** and ask a handbook question — this validates the
-   full path (Azure auth → your server → RAG → LLM → response) without
-   needing Teams installed.
-4. To test inside Teams itself: update `appPackage/manifest.json` with your
-   real App ID, zip the contents of `appPackage/`, and sideload it via
-   **Teams → Apps → Manage your apps → Upload a custom app**. Full walkthrough
-   in [SETUP.md](SETUP.md).
 
-Note: free dev tunnels issue a new URL on every restart — update the
-Messaging endpoint each time the tunnel restarts, or the bot will stop
-responding in Teams/Web Chat with no visible client-side error.
+---
 
-## Future enhancements
+## 6. Schedule the sync from Supabase (free, no paid cron)
 
-- Move off local machine + dev tunnel onto persistent hosting (Azure App
-  Service, Render, Railway, or Fly.io) for 24/7 availability.
-- Replace the flat-file numpy index with a proper vector database (e.g.
-  FAISS, Chroma, or Azure AI Search) as document volume grows.
-- Support multiple source documents / departments (not just one handbook).
-- Add an ingestion/admin UI so non-engineers can update source documents
-  without running a CLI script.
-- Capture answer feedback (thumbs up/down) in Teams to identify weak spots
-  in retrieval or gaps in the handbook itself.
-- Add structured logging/analytics on question topics to surface FAQs HR
-  should proactively document.
-- Richer Teams responses via Adaptive Cards (e.g. highlighted citations,
-  quick-reply follow-ups) instead of plain text.
-- Role- or group-based access to different document sets.
-- Automated tests and CI for the retrieval and ingestion pipeline.
+In the Supabase SQL editor:
 
-## Troubleshooting
+```sql
+-- Enable extensions (once)
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
 
-- **401 Unauthorized** — App ID / secret / tenant ID mismatch, or
-  `MicrosoftAppType` incorrect (new bots default to `SingleTenant`).
-- **Bot replies in Web Chat but not in Teams** — Teams channel not added on
-  the Bot resource, or the tunnel URL changed since the endpoint was last set.
-- **429 from Groq** — free-tier rate limit; wait and retry.
-- **Slow first response** — the embedding model loads lazily on first query;
-  subsequent responses are fast.
+-- Schedule the diff sync (every 15 min; use '*/30 * * * *' for 30 min)
+select cron.schedule(
+  'sharepoint-sync',
+  '*/15 * * * *',
+  $$
+  select net.http_post(
+    url     := 'https://<render-app>.onrender.com/internal/sharepoint-sync',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'X-Sync-Secret', '<same value as SYNC_SECRET>'
+    ),
+    body    := '{}'::jsonb
+  );
+  $$
+);
 
-See [SETUP.md](SETUP.md) for the full Azure Bot registration and tunnel setup guide.
+-- Verify
+select * from cron.job;
+```
+
+Graph webhook subscriptions were rejected here: they expire every few days and
+would need an auto-renewal job for no benefit at this scale.
+
+---
+
+## 7. Wire up Teams (Azure Bot Service + Teams app package)
+
+1. **Azure Bot resource**:
+   - Azure Portal → *Create resource → Azure Bot* (Multi-tenant is easiest).
+   - *Configuration → Messaging endpoint* = `https://<render-app>.onrender.com/api/messages`.
+   - Copy the **Microsoft App ID** into Render as `MICROSOFT_APP_ID`.
+   - Under the associated App Registration → *Certificates & secrets* → new
+     client secret → set as `MICROSOFT_APP_PASSWORD` in Render.
+   - Redeploy Render so the new env vars take effect.
+2. **Test in Web Chat**: Azure Bot resource → *Test in Web Chat*.
+3. **Enable Teams channel**: Azure Bot resource → *Channels* → add **Microsoft Teams**.
+4. **Package + upload the Teams app**:
+   - Edit [teams-app-package/manifest.json](teams-app-package/manifest.json) —
+     replace the placeholder GUID in **both** `id` and `bots[0].botId` with
+     the real Microsoft App ID (they must match).
+   - Zip and upload:
+     ```bash
+     cd teams-app-package
+     zip -j tricongpt-teams.zip manifest.json color.png outline.png
+     ```
+   - Teams → *Apps → Manage your apps → Upload a custom app* → select the zip.
+     If blocked, ask a Teams admin to enable *Upload custom apps* in the setup
+     policy.
+
+---
+
+## 8. End-to-end verification
+
+- Upload a small PDF to the SharePoint library.
+- Wait one polling interval (15 min by default) or trigger manually:
+  ```bash
+  curl -X POST -H "X-Sync-Secret: <SYNC_SECRET>" \
+    https://<render-app>.onrender.com/internal/sharepoint-sync
+  ```
+- Check Supabase:
+  ```sql
+  select count(*) from documents where source_path = '<path>';
+  ```
+- Message the bot in Teams (or `python local_chat.py`) with a question the PDF
+  answers. You should get a grounded reply.
+- Delete the PDF from SharePoint → next sync → rows disappear.
+
+---
+
+## Behavioural guarantees
+
+- **Grounding**: [llm_client.py](llm_client.py) instructs the model to answer
+  only from retrieved CONTEXT and prior HISTORY. General knowledge is disallowed.
+- **Anti-injection**: the system prompt explicitly rejects role changes,
+  instruction extraction, and training-data framings.
+- **No-context short-circuit**: if retrieval returns no chunks above the
+  similarity threshold, the LLM is **not called** — a fixed HR-referral message
+  is returned.
+- **Safe errors**: LLM / Supabase / SharePoint failures are logged with details
+  server-side but only ever surface a short, safe message to the employee.
+- **Async everywhere**: no blocking calls in the request path; heavy work
+  (ingestion, embeddings, summarisation, Graph calls) runs off the event loop.
+- **Real-time feel**: a `typing` activity is sent immediately on every message,
+  before the LLM call starts, so Teams shows the "…" indicator.
+- **Proactive messaging**: every turn persists the Bot Framework
+  `ConversationReference` so `adapter.continue_conversation` can push messages
+  to the employee later.
+
+## Security notes
+
+- The `service_role` Supabase key is only used server-side by the Render
+  service. It is never exposed to Teams clients.
+- The SharePoint Entra ID App Registration is **separate** from the bot's own
+  App Registration and holds `Sites.Selected` — access is scoped to the single
+  target site, not to the whole tenant.
+- `SYNC_SECRET` gates `/internal/sharepoint-sync`; missing or wrong headers
+  return HTTP 401.
+- All secrets come from environment variables. `.env` is git-ignored.
+- Bot Framework authenticates inbound Teams calls via the `Authorization`
+  header and the configured `MICROSOFT_APP_ID` / `MICROSOFT_APP_PASSWORD`.
+
+---
+
+## Command cheat sheet
+
+```bash
+# One-time system deps (macOS)
+brew install python@3.12 poppler tesseract libmagic
+
+# Project bootstrap
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env       # fill in secrets
+
+# Ingestion (SharePoint → Supabase pgvector)
+python ingest.py --backfill                        # full re-index
+python ingest.py --sync                            # incremental diff
+python ingest.py --delete "path/inside/drive.pdf"  # remove one file's chunks
+
+# Local chat (no Teams)
+python local_chat.py
+
+# Web server
+uvicorn app:app --reload --port 8000
+curl http://127.0.0.1:8000/healthz
+
+# Generate a strong SYNC_SECRET
+openssl rand -hex 32
+```

@@ -1,0 +1,88 @@
+services:
+  - type: web
+    name: tricongpt
+    runtime: python
+    plan: free
+    autoDeploy: true
+    # apt packages required by unstructured[pdf] hi_res:
+    #   poppler-utils  — PDF rendering
+    #   tesseract-ocr  — OCR fallback for scanned pages
+    #   libmagic1      — file-type detection
+    # Render's native Python build step runs as root, so apt-get works.
+    buildCommand: >-
+      apt-get update &&
+      apt-get install -y poppler-utils tesseract-ocr libmagic1 &&
+      pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      # Supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+
+      # LLM provider — set at least one key. Optional LLM_PROVIDER forces the choice.
+      - key: LLM_PROVIDER
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+
+      # Embeddings — Gemini gemini-embedding-001 (768-dim via Matryoshka, matches documents.embedding).
+      # Reuses GEMINI_API_KEY set above; no separate embedding provider key.
+      - key: EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: EMBEDDING_DIM
+        value: "768"
+
+      # Bot Framework / Azure Bot Service.
+      # MICROSOFT_APP_TYPE must match how the bot's App Registration was
+      # created ("MultiTenant" or "SingleTenant"); set it in the Render
+      # dashboard rather than hard-coding either default here.
+      - key: MICROSOFT_APP_ID
+        sync: false
+      - key: MICROSOFT_APP_PASSWORD
+        sync: false
+      - key: MICROSOFT_APP_TYPE
+        sync: false
+      - key: MICROSOFT_APP_TENANT_ID
+        sync: false
+
+      # SharePoint (Microsoft Graph via MSAL client-credentials).
+      # Dedicated Entra ID App Registration, application permission Sites.Selected.
+      - key: SHAREPOINT_TENANT_ID
+        sync: false
+      - key: SHAREPOINT_CLIENT_ID
+        sync: false
+      - key: SHAREPOINT_CLIENT_SECRET
+        sync: false
+      - key: SHAREPOINT_SITE_ID
+        sync: false
+      - key: SHAREPOINT_DRIVE_ID
+        sync: false
+      - key: SHAREPOINT_FOLDER_PATH
+        sync: false
+      - key: SHAREPOINT_RECURSIVE
+        value: "0"
+
+      # Shared secret for POST /internal/sharepoint-sync (Supabase pg_cron caller).
+      - key: SYNC_SECRET
+        sync: false
+
+      # Behaviour knobs
+      - key: RAG_TOP_K
+        value: "5"
+      - key: RAG_SIMILARITY_THRESHOLD
+        value: "0.72"
+      - key: SHORT_TERM_LIMIT
+        value: "10"
+      - key: SUMMARY_EVERY_TURNS
+        value: "20"
+      - key: LOG_LEVEL
+        value: INFO
