@@ -25,8 +25,8 @@ create table if not exists documents (
   created_at timestamptz default now()
 );
 create unique index if not exists documents_content_hash_key on documents (content_hash);
-create index if not exists documents_embedding_ivfflat on documents
-  using ivfflat (embedding vector_cosine_ops);
+create index if not exists documents_embedding_hnsw on documents
+  using hnsw (embedding vector_cosine_ops);
 create index if not exists documents_source_path_idx on documents (source_path);
 
 create table if not exists conversations (

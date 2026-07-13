@@ -261,6 +261,21 @@ async def _backfill() -> None:
             logger.exception("Failed to process %s: %s", meta.get("path"), e)
 
 
+async def _ingest_files(paths: list[str]) -> None:
+    """Ingest only the specified file paths from SharePoint."""
+    remote = await asyncio.to_thread(sharepoint_client.list_files)
+    remote_by_path = {f["path"]: f for f in remote}
+    for path in paths:
+        meta = remote_by_path.get(path)
+        if meta is None:
+            logger.error("File not found in SharePoint: %s", path)
+            continue
+        try:
+            await process_file(meta)
+        except Exception as e:
+            logger.exception("Failed to process %s: %s", path, e)
+
+
 def _main() -> None:
     from dotenv import load_dotenv
 
@@ -285,9 +300,18 @@ def _main() -> None:
         "--delete",
         help="Delete chunks for a single source_path.",
     )
+    parser.add_argument(
+        "--file",
+        nargs="+",
+        metavar="PATH",
+        help="Ingest only the specified SharePoint file path(s). "
+             "e.g. --file 'HR Documents/handbook.pdf' 'Policies/leave.pdf'",
+    )
     args = parser.parse_args()
 
-    if args.backfill:
+    if args.file:
+        asyncio.run(_ingest_files(args.file))
+    elif args.backfill:
         asyncio.run(_backfill())
     elif args.sync:
         asyncio.run(sync_from_sharepoint())

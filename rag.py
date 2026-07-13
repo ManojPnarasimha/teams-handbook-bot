@@ -17,25 +17,48 @@ from memory import (
 logger = logging.getLogger(__name__)
 
 TOP_K = int(os.getenv("RAG_TOP_K", "5"))
-SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.72"))
+SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.55"))
 
 
 async def _search_documents(embedding: list[float]) -> list[dict]:
-    """Search documents with the matching RPC."""
+    """Search documents by cosine similarity computed in Python.
+
+    This avoids IVFFlat index recall issues with small datasets.
+    """
+    import json
+    import numpy as np
+
     sb = await get_supabase()
-    res = await sb.rpc(
-        "match_documents",
-        {
-            "query_embedding": embedding,
-            "match_count": TOP_K,
-            "similarity_threshold": SIMILARITY_THRESHOLD,
-        },
-    ).execute()
-    # Narrow the RPC payload to a list of rows.
+    res = await sb.table("documents").select("id,source_path,content,embedding").not_.is_("embedding", "null").execute()
     data = res.data
-    if not isinstance(data, list):
+    if not isinstance(data, list) or not data:
         return []
-    return [row for row in data if isinstance(row, dict)]
+
+    query_vec = np.array(embedding, dtype=np.float32)
+    query_norm = np.linalg.norm(query_vec)
+    if query_norm == 0:
+        return []
+
+    results = []
+    for row in data:
+        if not isinstance(row, dict) or not row.get("embedding") or not row.get("content"):
+            continue
+        raw_emb = row["embedding"]
+        doc_vec = np.array(json.loads(raw_emb) if isinstance(raw_emb, str) else raw_emb, dtype=np.float32)
+        doc_norm = np.linalg.norm(doc_vec)
+        if doc_norm == 0:
+            continue
+        similarity = float(np.dot(query_vec, doc_vec) / (query_norm * doc_norm))
+        if similarity >= SIMILARITY_THRESHOLD:
+            results.append({
+                "id": row["id"],
+                "source_path": row["source_path"],
+                "content": row["content"],
+                "similarity": similarity,
+            })
+
+    results.sort(key=lambda r: r["similarity"], reverse=True)
+    return results[:TOP_K]
 
 
 async def answer_question(
