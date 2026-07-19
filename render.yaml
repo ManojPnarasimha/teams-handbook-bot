@@ -4,47 +4,71 @@ services:
     runtime: python
     plan: free
     autoDeploy: true
-    # apt packages required by unstructured[pdf] hi_res:
-    #   poppler-utils  — PDF rendering
-    #   tesseract-ocr  — OCR fallback for scanned pages
-    #   libmagic1      — file-type detection
-    # Render's native Python build step runs as root, so apt-get works.
+
+    # Build:
+    # 1. Install Microsoft ODBC Driver 18 for SQL Server (needed by pyodbc/aioodbc
+    #    to talk to Azure SQL Database).
+    # 2. Install Python dependencies.
+    #
+    # Render's Python runtime runs the build as root, so apt-get + curl work.
     buildCommand: >-
       apt-get update &&
-      apt-get install -y poppler-utils tesseract-ocr libmagic1 &&
+      apt-get install -y --no-install-recommends curl gnupg apt-transport-https unixodbc &&
+      curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg &&
+      echo "deb [signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list &&
+      apt-get update &&
+      ACCEPT_EULA=Y apt-get install -y msodbcsql18 &&
       pip install -r requirements.txt
+
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
-    envVars:
-      # Supabase
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
 
-      # LLM provider — set at least one key. Optional LLM_PROVIDER forces the choice.
-      - key: LLM_PROVIDER
+    envVars:
+      # ---- Azure SQL Database ----
+      # Full ODBC connection string (from Azure portal → SQL DB → Connection strings → ODBC).
+      - key: AZURE_SQL_CONNECTION_STRING
         sync: false
+      # Pool sizing — free-tier serverless allows only a handful of connections; keep small.
+      - key: AZURE_SQL_POOL_MIN
+        value: "1"
+      - key: AZURE_SQL_POOL_MAX
+        value: "4"
+
+      # ---- Azure OpenAI (chat + embeddings) ----
+      - key: AZURE_OPENAI_ENDPOINT
+        sync: false
+      - key: AZURE_OPENAI_API_KEY
+        sync: false
+      - key: AZURE_OPENAI_API_VERSION
+        value: "2024-10-21"
+      - key: AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+        value: emb-small
+      - key: AZURE_OPENAI_CHAT_DEPLOYMENT
+        value: chat-mini
+      - key: EMBEDDING_DIM
+        value: "768"
+      # Chunks per embeddings API call (endpoint accepts up to 2048).
+      - key: EMBED_BATCH_SIZE
+        value: "64"
+
+      # ---- Azure Document Intelligence (OCR fallback only; PyMuPDF is primary) ----
+      - key: AZURE_DOC_INTELLIGENCE_ENDPOINT
+        sync: false
+      - key: AZURE_DOC_INTELLIGENCE_KEY
+        sync: false
+      - key: AZURE_DOC_INTELLIGENCE_MODEL
+        value: prebuilt-layout
+      # Minimum chars PyMuPDF must extract before we trust it over the DI OCR fallback.
+      - key: PYMUPDF_MIN_CHARS
+        value: "200"
+
+      # ---- LLM fallback (Groq) ----
       - key: GROQ_API_KEY
-        sync: false
-      - key: GEMINI_API_KEY
         sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
-      - key: GEMINI_MODEL
-        value: gemini-2.5-flash
 
-      # Embeddings — Gemini gemini-embedding-001 (768-dim via Matryoshka, matches documents.embedding).
-      # Reuses GEMINI_API_KEY set above; no separate embedding provider key.
-      - key: EMBEDDING_MODEL
-        value: gemini-embedding-001
-      - key: EMBEDDING_DIM
-        value: "768"
-
-      # Bot Framework / Azure Bot Service.
-      # MICROSOFT_APP_TYPE must match how the bot's App Registration was
-      # created ("MultiTenant" or "SingleTenant"); set it in the Render
-      # dashboard rather than hard-coding either default here.
+      # ---- Bot Framework / Azure Bot Service ----
       - key: MICROSOFT_APP_ID
         sync: false
       - key: MICROSOFT_APP_PASSWORD
@@ -54,8 +78,7 @@ services:
       - key: MICROSOFT_APP_TENANT_ID
         sync: false
 
-      # SharePoint (Microsoft Graph via MSAL client-credentials).
-      # Dedicated Entra ID App Registration, application permission Sites.Selected.
+      # ---- SharePoint (Microsoft Graph via MSAL) ----
       - key: SHAREPOINT_TENANT_ID
         sync: false
       - key: SHAREPOINT_CLIENT_ID
@@ -71,18 +94,32 @@ services:
       - key: SHAREPOINT_RECURSIVE
         value: "0"
 
-      # Shared secret for POST /internal/sharepoint-sync (Supabase pg_cron caller).
+      # ---- Scheduled sync ----
+      # Keep this off unless you wire an external cron. Manual ingestion via
+      # `python ingest.py` is always available.
+      - key: SCHEDULED_SYNC_ENABLED
+        value: "0"
       - key: SYNC_SECRET
         sync: false
 
-      # Behaviour knobs
+      # ---- Behaviour knobs ----
       - key: RAG_TOP_K
         value: "5"
       - key: RAG_SIMILARITY_THRESHOLD
-        value: "0.72"
+        value: "0.55"
       - key: SHORT_TERM_LIMIT
         value: "10"
       - key: SUMMARY_EVERY_TURNS
         value: "20"
       - key: LOG_LEVEL
         value: INFO
+
+      # ---- Chunking (ingest.py) ----
+      - key: CHUNK_TARGET_CHARS
+        value: "500"
+      - key: CHUNK_MAX_CHARS
+        value: "800"
+      - key: CHUNK_OVERLAP_CHARS
+        value: "80"
+      - key: CHUNK_MIN_CHARS
+        value: "80"

@@ -1,88 +1,72 @@
--- Supabase schema for TriconGPT.
--- Run in the Supabase SQL editor (or via psql) against your project database.
-
--- Enable the pgvector extension. On Supabase this can also be toggled via
--- Dashboard → Database → Extensions → search "vector" → Enable.
-create extension if not exists vector;
+-- Azure SQL Database schema for TriconGPT.
+--
+-- Apply once with:
+--   sqlcmd -S <server>.database.windows.net -d <db> -U <user> -P <pwd> -N -C -i db/schema.sql
+-- or with Azure Data Studio / the VS Code MSSQL extension.
+--
+-- Re-running against the same database will error (tables already exist);
+-- that is intentional. Drop the schema first if you need a clean re-apply.
+--
+-- Uses the native VECTOR type (GA in Azure SQL Database). Cosine similarity
+-- is computed inline in rag.py via VECTOR_DISTANCE('cosine', ...).
 
 -- ---- Core tables ------------------------------------------------------------
 
-create table if not exists employees (
-  id uuid primary key default gen_random_uuid(),
-  aad_object_id text unique not null,
-  name text,
-  email text,
-  created_at timestamptz default now()
+CREATE TABLE dbo.employees (
+    id             UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+    aad_object_id  NVARCHAR(128)    NOT NULL UNIQUE,
+    name           NVARCHAR(256)    NULL,
+    email          NVARCHAR(256)    NULL,
+    created_at     DATETIMEOFFSET   NOT NULL DEFAULT SYSUTCDATETIME()
 );
 
-create table if not exists documents (
-  id uuid primary key default gen_random_uuid(),
-  source_path text not null,          -- SharePoint item path within the drive, e.g. "HR Documents/handbook.pdf"
-  source_updated_at timestamptz,      -- SharePoint item's lastModifiedDateTime, used to detect changes
-  content text,
-  content_hash text not null,         -- hash of this chunk's text, for idempotent upserts
-  embedding vector(768),              -- Gemini text-embedding-004 dimension
-  created_at timestamptz default now()
-);
-create unique index if not exists documents_content_hash_key on documents (content_hash);
-create index if not exists documents_embedding_hnsw on documents
-  using hnsw (embedding vector_cosine_ops);
-create index if not exists documents_source_path_idx on documents (source_path);
-
-create table if not exists conversations (
-  id uuid primary key default gen_random_uuid(),
-  employee_id uuid references employees(id) on delete cascade,
-  channel text,                        -- 'teams' | 'webchat' | 'local'
-  created_at timestamptz default now()
+CREATE TABLE dbo.documents (
+    id                 UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+    source_path        NVARCHAR(450)    NOT NULL,       -- SharePoint item path within the drive; 450 keeps the nonclustered index key <= 900 bytes (SQL Server limit is 1700)
+    source_updated_at  DATETIMEOFFSET   NULL,           -- SharePoint lastModifiedDateTime
+    content            NVARCHAR(MAX)    NULL,
+    content_hash       NVARCHAR(64)     NOT NULL UNIQUE,-- SHA-256 hex for idempotent upserts
+    embedding          VECTOR(768)      NULL,           -- Azure OpenAI text-embedding-3-small @ dim=768
+    created_at         DATETIMEOFFSET   NOT NULL DEFAULT SYSUTCDATETIME()
 );
 
-create table if not exists messages (
-  id uuid primary key default gen_random_uuid(),
-  conversation_id uuid references conversations(id) on delete cascade,
-  role text check (role in ('user','assistant')),
-  content text,
-  created_at timestamptz default now()
-);
-create index if not exists messages_conversation_created_idx
-  on messages (conversation_id, created_at);
+CREATE INDEX documents_source_path_idx ON dbo.documents (source_path);
 
-create table if not exists memory_summaries (
-  employee_id uuid primary key references employees(id) on delete cascade,
-  summary_text text,
-  updated_at timestamptz default now()
-);
+-- Optional DiskANN vector index for large datasets (>10k chunks).
+-- Brute-force VECTOR_DISTANCE is fast enough below that threshold.
+--   CREATE VECTOR INDEX documents_embedding_diskann
+--     ON dbo.documents (embedding)
+--     WITH (metric = 'cosine', type = 'diskann');
 
-create table if not exists conversation_references (
-  employee_id uuid primary key references employees(id) on delete cascade,
-  reference jsonb,                     -- Bot Framework ConversationReference
-  updated_at timestamptz default now()
+CREATE TABLE dbo.conversations (
+    id           UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+    employee_id  UNIQUEIDENTIFIER NULL REFERENCES dbo.employees (id) ON DELETE CASCADE,
+    channel      NVARCHAR(32)     NULL,                    -- 'teams' | 'webchat' | 'local'
+    created_at   DATETIMEOFFSET   NOT NULL DEFAULT SYSUTCDATETIME()
 );
 
--- ---- Similarity search RPC --------------------------------------------------
--- Called from rag.py via supabase.rpc('match_documents', {...}).
--- Cosine similarity = 1 - cosine_distance; we filter by a min-similarity threshold.
+CREATE INDEX conversations_employee_channel_idx
+    ON dbo.conversations (employee_id, channel, created_at DESC);
 
-create or replace function match_documents(
-  query_embedding vector(768),
-  match_count int default 5,
-  similarity_threshold float default 0.72
-)
-returns table (
-  id uuid,
-  source_path text,
-  content text,
-  similarity float
-)
-language sql stable
-as $$
-  select
-    d.id,
-    d.source_path,
-    d.content,
-    1 - (d.embedding <=> query_embedding) as similarity
-  from documents d
-  where d.embedding is not null
-    and 1 - (d.embedding <=> query_embedding) >= similarity_threshold
-  order by d.embedding <=> query_embedding
-  limit match_count;
-$$;
+CREATE TABLE dbo.messages (
+    id               UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
+    conversation_id  UNIQUEIDENTIFIER NULL REFERENCES dbo.conversations (id) ON DELETE CASCADE,
+    role             NVARCHAR(16)     NOT NULL CHECK (role IN ('user', 'assistant')),
+    content          NVARCHAR(MAX)    NULL,
+    created_at       DATETIMEOFFSET   NOT NULL DEFAULT SYSUTCDATETIME()
+);
+
+CREATE INDEX messages_conversation_created_idx
+    ON dbo.messages (conversation_id, created_at);
+
+CREATE TABLE dbo.memory_summaries (
+    employee_id   UNIQUEIDENTIFIER NOT NULL PRIMARY KEY REFERENCES dbo.employees (id) ON DELETE CASCADE,
+    summary_text  NVARCHAR(MAX)    NULL,
+    updated_at    DATETIMEOFFSET   NOT NULL DEFAULT SYSUTCDATETIME()
+);
+
+CREATE TABLE dbo.conversation_references (
+    employee_id  UNIQUEIDENTIFIER NOT NULL PRIMARY KEY REFERENCES dbo.employees (id) ON DELETE CASCADE,
+    reference    NVARCHAR(MAX)    NULL CHECK (reference IS NULL OR ISJSON(reference) = 1),
+    updated_at   DATETIMEOFFSET   NOT NULL DEFAULT SYSUTCDATETIME()
+);

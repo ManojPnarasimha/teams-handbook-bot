@@ -20,6 +20,7 @@ from botbuilder.schema import Activity, ActivityTypes, ConversationReference
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+import db
 import ingest
 from memory import (
     get_or_create_conversation,
@@ -76,6 +77,11 @@ _adapter.on_turn_error = _on_error
 # Shared secret for scheduled sync jobs.
 SYNC_SECRET = os.getenv("SYNC_SECRET", "")
 
+# Master switch for the scheduled sync endpoint. When "0" (default), the
+# endpoint returns 403 regardless of the secret so that no cron can trigger
+# ingestion accidentally. Flip to "1" in the environment to enable.
+SCHEDULED_SYNC_ENABLED = os.getenv("SCHEDULED_SYNC_ENABLED", "0") == "1"
+
 
 class OrgBot(ActivityHandler):
     async def on_message_activity(self, turn_context: TurnContext) -> None:
@@ -121,9 +127,31 @@ class OrgBot(ActivityHandler):
         recipient_id = recipient.id if recipient else None
         for member in members_added:
             if member.id != recipient_id:
-                await turn_context.send_activity(
-                    "Hi! I'm TriconGPT — ask me anything about company policies or handbook content."
-                )
+                await turn_context.send_activity(await _welcome_message())
+
+
+async def _welcome_message() -> str:
+    """Greeting sent on the first turn of a new conversation.
+
+    Lists every document currently ingested from SharePoint, queried live from
+    dbo.documents at send-time (no scheduled/cron job involved — this simply
+    reflects whatever has been ingested so far, one time, per new conversation).
+    """
+    base = "Hi! I'm TriconGPT — ask me anything about company policies or handbook content."
+    try:
+        rows = await db.fetch_all(
+            "SELECT DISTINCT source_path FROM dbo.documents ORDER BY source_path"
+        )
+    except Exception as e:
+        logger.warning("Failed to list ingested documents for welcome message: %s", e)
+        return base
+
+    sources = [r["source_path"] for r in rows if r.get("source_path")]
+    if not sources:
+        return base
+
+    listing = "\n".join(f"\u2022 {s}" for s in sources)
+    return f"{base}\n\nI currently have information from:\n{listing}"
 
 
 def _cr_to_dict(ref: ConversationReference) -> dict[str, Any]:
@@ -173,7 +201,8 @@ async def messages(request: Request) -> JSONResponse:
 
 
 # SharePoint sync endpoint
-# Scheduled by Supabase pg_cron + pg_net.
+# Gated by SCHEDULED_SYNC_ENABLED so a stray cron cannot trigger ingestion by
+# accident. Manual ingestion is always available via `python ingest.py`.
 
 async def _run_sharepoint_sync() -> None:
     """Run the sync off the request thread."""
@@ -188,10 +217,21 @@ async def sharepoint_sync(
     background_tasks: BackgroundTasks,
     x_sync_secret: str | None = Header(default=None, alias="X-Sync-Secret"),
 ) -> JSONResponse:
-    """Trigger SharePoint sync with a shared secret."""
+    """Trigger SharePoint sync with a shared secret.
+
+    - Requires SCHEDULED_SYNC_ENABLED=1 in the environment.
+    - Requires the X-Sync-Secret header to match SYNC_SECRET.
+    - Kicks off ingestion in a background task so schedulers get a fast 202.
+    """
+    if not SCHEDULED_SYNC_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Scheduled sync is disabled (set SCHEDULED_SYNC_ENABLED=1).",
+        )
     if not SYNC_SECRET or x_sync_secret != SYNC_SECRET:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bad secret")
 
-    # Offload the heavy sync work so pg_net closes quickly.
     background_tasks.add_task(_run_sharepoint_sync)
-    return JSONResponse({"accepted": True})
+    return JSONResponse(
+        {"accepted": True}, status_code=status.HTTP_202_ACCEPTED
+    )

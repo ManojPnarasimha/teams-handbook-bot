@@ -5,22 +5,26 @@ botbuilder-core>=4.16.0
 botbuilder-integration-aiohttp>=4.16.0
 botbuilder-schema>=4.16.0
 
-# ---- Data / DB ----
-supabase>=2.9.0
-httpx>=0.27.0
+# ---- Azure SQL Database ----
+# Needs Microsoft ODBC Driver 18 for SQL Server on the host (see README).
+aioodbc>=0.5.0
+pyodbc>=5.1.0
 
-# ---- SharePoint (Microsoft Graph via MSAL client-credentials) ----
+# ---- Azure OpenAI (chat + embeddings) ----
+openai>=1.51.0
+
+# ---- Azure Document Intelligence (OCR fallback) ----
+azure-ai-documentintelligence>=1.0.0
+
+# ---- PDF text extraction (primary; falls back to Azure DI OCR) ----
+pymupdf>=1.24.0
+
+# ---- SharePoint (Microsoft Graph via MSAL) ----
 msal>=1.31.0
 requests>=2.32.0
 
-# ---- LLM providers ----
+# ---- LLM fallback ----
 groq>=0.11.0
-google-generativeai>=0.8.0    # chat (Gemini) AND embeddings (text-embedding-004)
-
-# ---- Document extraction ----
-unstructured[pdf]>=0.15.0
-pi_heif>=0.18.0           # HEIC support pulled in by unstructured hi_res
-pillow>=10.0.0
 
 # ---- Utilities ----
 python-dotenv>=1.0.1
