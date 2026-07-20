@@ -1,6 +1,11 @@
 .env
+.env.*
 data/
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Local dev tunnel binary and its rotating log
+cloudflared*.exe
+*.log

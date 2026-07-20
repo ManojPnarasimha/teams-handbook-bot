@@ -79,10 +79,21 @@ def _call_azure_openai(messages: list[dict]) -> str:
         response = client.chat.completions.create(
             model=AZURE_OPENAI_CHAT_DEPLOYMENT,
             messages=messages,  # type: ignore[arg-type]
-            temperature=0.2,
-            max_tokens=800,
+            max_completion_tokens=2000,
         )
-        return (response.choices[0].message.content or "").strip()
+        content = (response.choices[0].message.content or "").strip()
+        if not content:
+            # gpt-5-mini spends part of max_completion_tokens on internal
+            # reasoning before writing output; on complex prompts it can
+            # exhaust the budget with nothing left to say (finish_reason
+            # "length", empty content). Treat that as a failure so the
+            # caller falls back instead of sending Teams a blank message.
+            raise LLMError(
+                f"Azure OpenAI returned empty content (finish_reason={response.choices[0].finish_reason})"
+            )
+        return content
+    except LLMError:
+        raise
     except Exception as e:
         logger.error("Azure OpenAI call failed: %s", e)
         raise LLMError("Azure OpenAI call failed") from e
