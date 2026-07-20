@@ -1,101 +1,196 @@
-"""SharePoint ingestion pipeline."""
+"""SharePoint → Azure Document Intelligence / PyMuPDF → Azure SQL ingestion."""
 
 from __future__ import annotations
 
-# Load dotenv before other env reads when run as a script.
-import os as _os
-if _os.getenv("_DOTENV_LOADED") is None and __name__ == "__main__":
-    from dotenv import load_dotenv as _ld
-    _ld()
-    _os.environ["_DOTENV_LOADED"] = "1"
+# Load .env before any module-level os.getenv() calls below.
+from dotenv import load_dotenv
+load_dotenv()
 
 import argparse
 import asyncio
 import hashlib
-import importlib
 import logging
 import os
-import tempfile
-from pathlib import Path
+import re
 from typing import Iterable
 
+import db
 import sharepoint_client
-from db_client import embed_text, get_supabase
+from document_extractor import LayoutBlock, extract_layout
+from embeddings import embed_many
 
 logger = logging.getLogger(__name__)
 
-# Chunking targets for RAG quality and cost.
-CHUNK_TARGET_CHARS = int(os.getenv("CHUNK_TARGET_CHARS", "1200"))
-CHUNK_MAX_CHARS = int(os.getenv("CHUNK_MAX_CHARS", "1800"))
+# Chunking targets. Smaller = finer retrieval; tune via env.
+CHUNK_TARGET_CHARS = int(os.getenv("CHUNK_TARGET_CHARS", "500"))
+CHUNK_MAX_CHARS = int(os.getenv("CHUNK_MAX_CHARS", "800"))
+CHUNK_OVERLAP_CHARS = int(os.getenv("CHUNK_OVERLAP_CHARS", "80"))
+CHUNK_MIN_CHARS = int(os.getenv("CHUNK_MIN_CHARS", "80"))
 
 
-# Extraction
+# ---- Chunking --------------------------------------------------------------
 
-def _extract_elements(local_path: str):
-    """Extract document elements with layout awareness."""
-    try:
-        partition = importlib.import_module("unstructured.partition.auto").partition
-    except ImportError as exc:
-        raise RuntimeError("The 'unstructured' package is required for ingestion.") from exc
+def _split_long_text(text: str, max_chars: int) -> list[str]:
+    """Recursively split an oversized block at natural boundaries.
 
-    return partition(
-        filename=local_path,
-        strategy="hi_res",
-        infer_table_structure=True,
-    )
+    Tries paragraphs -> sentences -> whitespace -> hard character slice.
+    Guarantees every returned piece is <= max_chars.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+
+    # 1. Paragraph boundaries (blank lines).
+    parts = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(parts) > 1:
+        out: list[str] = []
+        for p in parts:
+            out.extend(_split_long_text(p, max_chars))
+        return out
+
+    # 2. Sentence boundaries.
+    parts = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if len(parts) > 1:
+        out = []
+        for p in parts:
+            out.extend(_split_long_text(p, max_chars))
+        return out
+
+    # 3. Whitespace / word boundaries, packing words up to max_chars.
+    words = text.split()
+    if len(words) > 1:
+        out = []
+        buf: list[str] = []
+        buf_len = 0
+        for w in words:
+            add_len = len(w) + (1 if buf else 0)
+            if buf and buf_len + add_len > max_chars:
+                out.append(" ".join(buf))
+                buf, buf_len = [w], len(w)
+            else:
+                buf.append(w)
+                buf_len += add_len
+        if buf:
+            out.append(" ".join(buf))
+        return out
+
+    # 4. Hard slice (single very long token, e.g. base64 blob).
+    return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
 
 
-def _element_text(el) -> str:
-    # Keep table structure as HTML when available.
-    category = getattr(el, "category", None)
-    if category == "Table":
-        md = getattr(el.metadata, "text_as_html", None) if getattr(el, "metadata", None) else None
-        if md:
-            return md
-    return (getattr(el, "text", "") or "").strip()
+def _append_with_overlap(chunks: list[str], new_chunk: str) -> None:
+    """Append new_chunk, prefixing it with the tail of the previous chunk.
+
+    Overlap gives the embedder shared context across boundaries so a query
+    that straddles two chunks still matches at least one.
+    """
+    if not new_chunk:
+        return
+    if CHUNK_OVERLAP_CHARS > 0 and chunks:
+        tail = chunks[-1][-CHUNK_OVERLAP_CHARS:]
+        if tail and not new_chunk.startswith(tail):
+            new_chunk = f"{tail} {new_chunk}"
+    chunks.append(new_chunk)
 
 
-def _chunk_by_structure(elements: Iterable) -> list[str]:
-    """Group elements into chunks within the configured size limits."""
+def _chunk_by_structure(blocks: Iterable[LayoutBlock]) -> list[str]:
+    """Group layout blocks into overlapping chunks within size targets.
+
+    Strategy:
+      * Every heading starts a new chunk (preserves section context).
+      * Blocks larger than CHUNK_MAX_CHARS are split internally at
+        paragraph -> sentence -> word boundaries before grouping.
+      * Tables are flushed to their own chunk(s); very large tables are
+        split by rows so no single chunk exceeds CHUNK_MAX_CHARS, and the
+        markdown header is repeated on each piece for context.
+      * Adjacent chunks share a small CHUNK_OVERLAP_CHARS tail so a query
+        crossing a boundary still hits at least one chunk.
+      * Very short trailing chunks are merged into the previous chunk to
+        avoid noisy micro-fragments.
+    """
     chunks: list[str] = []
     buf: list[str] = []
     buf_len = 0
 
-    def flush():
+    def flush() -> None:
         nonlocal buf, buf_len
-        if buf:
-            chunks.append("\n\n".join(buf).strip())
-            buf, buf_len = [], 0
+        if not buf:
+            return
+        chunk = "\n\n".join(buf).strip()
+        buf, buf_len = [], 0
+        if not chunk:
+            return
+        # Merge a tiny trailing chunk into the previous one when it fits.
+        if len(chunk) < CHUNK_MIN_CHARS and chunks:
+            merged = f"{chunks[-1]}\n\n{chunk}"
+            if len(merged) <= CHUNK_MAX_CHARS + CHUNK_OVERLAP_CHARS:
+                chunks[-1] = merged
+                return
+        _append_with_overlap(chunks, chunk)
 
-    for el in elements:
-        text = _element_text(el)
-        if not text:
-            continue
-        category = getattr(el, "category", None)
-
-        if category == "Table":
+    def add_piece(piece: str) -> None:
+        """Add a size-bounded piece to the buffer, flushing as needed."""
+        nonlocal buf, buf_len
+        piece = piece.strip()
+        if not piece:
+            return
+        projected = buf_len + len(piece) + (2 if buf else 0)
+        if buf and projected > CHUNK_MAX_CHARS:
             flush()
-            chunks.append(text)
-            continue
-
-        if category == "Title" and buf_len > 200:
-            flush()
-
-        projected = buf_len + len(text) + 2
-        if projected > CHUNK_MAX_CHARS and buf:
-            flush()
-
-        buf.append(text)
-        buf_len += len(text) + 2
-
+            projected = len(piece)
+        buf.append(piece)
+        buf_len = projected
         if buf_len >= CHUNK_TARGET_CHARS:
             flush()
+
+    for block in blocks:
+        text = block.text.strip()
+        if not text:
+            continue
+
+        if block.kind == "table":
+            flush()
+            lines = text.splitlines()
+            # Small tables or non-markdown tables: use the generic splitter.
+            if len(text) <= CHUNK_MAX_CHARS or len(lines) < 4:
+                for piece in _split_long_text(text, CHUNK_MAX_CHARS):
+                    _append_with_overlap(chunks, piece)
+                continue
+            # Large markdown tables: repeat the header on every row-piece.
+            header = "\n".join(lines[:2])  # "| a | b |" + "| --- | --- |"
+            current = [header]
+            current_len = len(header)
+            for row in lines[2:]:
+                row_len = len(row) + 1
+                if current_len + row_len > CHUNK_MAX_CHARS and len(current) > 1:
+                    _append_with_overlap(chunks, "\n".join(current))
+                    current = [header, row]
+                    current_len = len(header) + row_len
+                else:
+                    current.append(row)
+                    current_len += row_len
+            if len(current) > 1:
+                _append_with_overlap(chunks, "\n".join(current))
+            continue
+
+        if block.kind == "heading":
+            # Section boundary: always start a fresh chunk.
+            flush()
+
+        if len(text) > CHUNK_MAX_CHARS:
+            flush()
+            for piece in _split_long_text(text, CHUNK_MAX_CHARS):
+                add_piece(piece)
+        else:
+            add_piece(text)
 
     flush()
     return [c for c in chunks if c]
 
 
-# DB helpers
+# ---- DB helpers ------------------------------------------------------------
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -103,112 +198,80 @@ def _hash(text: str) -> str:
 
 async def delete_file_chunks(source_path: str) -> int:
     """Remove all rows for a source path."""
-    sb = await get_supabase()
-    res = (
-        await sb.table("documents")
-        .delete()
-        .eq("source_path", source_path)
-        .execute()
+    n = await db.execute(
+        "DELETE FROM dbo.documents WHERE source_path = ?", (source_path,)
     )
-    n = len(res.data or [])
     logger.info("Deleted %d chunks for %s", n, source_path)
     return n
 
 
-def _download_to_tempfile(download_url: str, suffix: str) -> str:
-    """Download a file to a temp path."""
-    data = sharepoint_client.download_file(download_url)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix or ".bin")
-    try:
-        tmp.write(data)
-        tmp.flush()
-    finally:
-        tmp.close()
-    return tmp.name
-
-
-# Public API
-
-async def process_file(file_meta: dict) -> int:
-    """Process one SharePoint file end to end."""
-    source_path = file_meta["path"]
-    download_url = file_meta["download_url"]
-    suffix = Path(file_meta["name"]).suffix
-
-    logger.info("Processing %s", source_path)
-    local_path = await asyncio.to_thread(_download_to_tempfile, download_url, suffix)
-    try:
-        elements = await asyncio.to_thread(_extract_elements, local_path)
-        chunks = _chunk_by_structure(elements)
-        if not chunks:
-            logger.warning("No extractable chunks for %s", source_path)
-            await delete_file_chunks(source_path)
-            return 0
-
-        # Embed chunks off the event loop and slow down for the free-tier limit.
-        import time
-
-        def _embed_with_backoff(chunks_list):
-            results = []
-            for i, c in enumerate(chunks_list):
-                if i > 0 and i % 80 == 0:
-                    logger.info("Rate-limit pause at chunk %d/%d", i, len(chunks_list))
-                    time.sleep(30)
-                results.append(embed_text(c))
-            return results
-
-        embeddings = await asyncio.to_thread(_embed_with_backoff, chunks)
-
-        rows = [
-            {
-                "source_path": source_path,
-                "source_updated_at": file_meta.get("last_modified"),
-                "content": chunk,
-                # Prefix with source_path to keep identical text unique.
-                "content_hash": _hash(f"{source_path}::{chunk}"),
-                "embedding": emb,
-            }
-            for chunk, emb in zip(chunks, embeddings)
-        ]
-
-        # Delete then insert to avoid stale chunks.
-        await delete_file_chunks(source_path)
-        sb = await get_supabase()
-        await sb.table("documents").insert(rows).execute()
-        logger.info("Inserted %d chunks for %s", len(rows), source_path)
-        return len(rows)
-    finally:
-        try:
-            os.unlink(local_path)
-        except OSError:
-            pass
-
-
-# SharePoint sync
-
 async def _existing_index() -> dict[str, str | None]:
-    """Return the current source_path -> updated_at index."""
-    sb = await get_supabase()
-    res = (
-        await sb.table("documents")
-        .select("source_path,source_updated_at")
-        .execute()
+    """Return source_path -> latest source_updated_at, one row per file."""
+    rows = await db.fetch_all(
+        """
+        SELECT source_path, MAX(source_updated_at) AS updated_at
+        FROM dbo.documents
+        GROUP BY source_path
+        """
     )
-    # Narrow the typed payload before reading fields.
-    data = res.data if isinstance(res.data, list) else []
     out: dict[str, str | None] = {}
-    for row in data:
-        if not isinstance(row, dict):
-            continue
+    for row in rows:
         sp = row.get("source_path")
-        if isinstance(sp, str) and sp not in out:
-            updated = row.get("source_updated_at")
-            out[sp] = updated if isinstance(updated, str) else None
+        if not isinstance(sp, str):
+            continue
+        updated = row.get("updated_at")
+        # DATETIMEOFFSET comes back as a datetime; normalise to ISO string.
+        out[sp] = updated.isoformat() if updated is not None else None
     return out
 
 
+# ---- Ingestion pipeline ----------------------------------------------------
+
+async def process_file(file_meta: dict) -> int:
+    """Ingest one SharePoint file end-to-end."""
+    source_path = file_meta["path"]
+    download_url = file_meta["download_url"]
+
+    logger.info("Processing %s", source_path)
+    file_bytes = await asyncio.to_thread(sharepoint_client.download_file, download_url)
+
+    blocks = await asyncio.to_thread(extract_layout, file_bytes)
+    chunks = _chunk_by_structure(blocks)
+    if not chunks:
+        logger.warning("No extractable chunks for %s", source_path)
+        await delete_file_chunks(source_path)
+        return 0
+
+    embeddings = await embed_many(chunks)
+
+    rows = [
+        (
+            source_path,
+            file_meta.get("last_modified"),
+            chunk,
+            # Prefix with source_path so identical text across files stays unique.
+            _hash(f"{source_path}::{chunk}"),
+            db.vector_literal(emb),
+        )
+        for chunk, emb in zip(chunks, embeddings)
+    ]
+
+    # Delete-then-insert to avoid stale chunks.
+    await delete_file_chunks(source_path)
+    await db.executemany(
+        """
+        INSERT INTO dbo.documents
+            (source_path, source_updated_at, content, content_hash, embedding)
+        VALUES (?, ?, ?, ?, CAST(CONVERT(NVARCHAR(MAX), ?) AS VECTOR(768)))
+        """,
+        rows,
+    )
+    logger.info("Inserted %d chunks for %s", len(rows), source_path)
+    return len(rows)
+
+
 async def sync_from_sharepoint() -> dict:
-    """Diff SharePoint against the DB and reconcile changes."""
+    """Incremental diff: fetch remote list, compare to DB, reconcile."""
     logger.info("SharePoint sync starting")
     remote = await asyncio.to_thread(sharepoint_client.list_files)
     remote_by_path = {f["path"]: f for f in remote}
@@ -217,7 +280,6 @@ async def sync_from_sharepoint() -> dict:
     to_process: list[dict] = []
     for path, meta in remote_by_path.items():
         prev = existing.get(path)
-        # Compare ISO timestamps directly; Graph normalises to UTC.
         if prev is None or (meta.get("last_modified") and meta["last_modified"] != prev):
             to_process.append(meta)
 
@@ -248,7 +310,7 @@ async def sync_from_sharepoint() -> dict:
     return summary
 
 
-# CLI
+# ---- CLI -------------------------------------------------------------------
 
 async def _backfill() -> None:
     """Process every SharePoint file, ignoring existing DB state."""
@@ -277,10 +339,6 @@ async def _ingest_files(paths: list[str]) -> None:
 
 
 def _main() -> None:
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -309,16 +367,22 @@ def _main() -> None:
     )
     args = parser.parse_args()
 
-    if args.file:
-        asyncio.run(_ingest_files(args.file))
-    elif args.backfill:
-        asyncio.run(_backfill())
-    elif args.sync:
-        asyncio.run(sync_from_sharepoint())
-    elif args.delete:
-        asyncio.run(delete_file_chunks(args.delete))
-    else:
-        parser.print_help()
+    async def _run() -> None:
+        try:
+            if args.file:
+                await _ingest_files(args.file)
+            elif args.backfill:
+                await _backfill()
+            elif args.sync:
+                await sync_from_sharepoint()
+            elif args.delete:
+                await delete_file_chunks(args.delete)
+            else:
+                parser.print_help()
+        finally:
+            await db.close_pool()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

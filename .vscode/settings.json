@@ -1,0 +1,9 @@
+{
+  // The Oracle SQL Developer extension claims *.sql files and runs a
+  // PL/SQL parser that rejects valid Azure SQL / T-SQL (NVARCHAR, VECTOR,
+  // UNIQUEIDENTIFIER, etc.). Route .sql to the built-in generic sql language
+  // so we get syntax highlighting without incorrect diagnostics.
+  "files.associations": {
+    "*.sql": "sql"
+  }
+}
