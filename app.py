@@ -13,6 +13,8 @@ load_dotenv()  # must run before any os.getenv() reads below
 
 from botbuilder.core import (
     ActivityHandler,
+    CardFactory,
+    MessageFactory,
     TurnContext,
 )
 from botbuilder.integration.aiohttp import CloudAdapter, ConfigurationBotFrameworkAuthentication
@@ -20,13 +22,13 @@ from botbuilder.schema import Activity, ActivityTypes, ConversationReference
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-import db
 import ingest
 from memory import (
     get_or_create_conversation,
     save_conversation_reference,
     upsert_employee,
 )
+from quick_prompts import ROOT_ID, build_category_card, build_root_card
 from rag import answer_question
 
 # Logging
@@ -86,6 +88,18 @@ SCHEDULED_SYNC_ENABLED = os.getenv("SCHEDULED_SYNC_ENABLED", "0") == "1"
 class OrgBot(ActivityHandler):
     async def on_message_activity(self, turn_context: TurnContext) -> None:
         activity = turn_context.activity
+
+        # Quick-prompt menu navigation: Action.Submit from the topic/category
+        # cards carries no text, just a `quickPromptCategory` value.
+        value = activity.value or {}
+        category_id = value.get("quickPromptCategory") if isinstance(value, dict) else None
+        if category_id is not None:
+            card = build_root_card() if category_id == ROOT_ID else build_category_card(category_id)
+            await turn_context.send_activity(
+                MessageFactory.attachment(CardFactory.adaptive_card(card))
+            )
+            return
+
         text = (activity.text or "").strip()
         if not text:
             return
@@ -127,31 +141,9 @@ class OrgBot(ActivityHandler):
         recipient_id = recipient.id if recipient else None
         for member in members_added:
             if member.id != recipient_id:
-                await turn_context.send_activity(await _welcome_message())
-
-
-async def _welcome_message() -> str:
-    """Greeting sent on the first turn of a new conversation.
-
-    Lists every document currently ingested from SharePoint, queried live from
-    dbo.documents at send-time (no scheduled/cron job involved — this simply
-    reflects whatever has been ingested so far, one time, per new conversation).
-    """
-    base = "Hi! I'm TriconGPT — ask me anything about company policies or handbook content."
-    try:
-        rows = await db.fetch_all(
-            "SELECT DISTINCT source_path FROM dbo.documents ORDER BY source_path"
-        )
-    except Exception as e:
-        logger.warning("Failed to list ingested documents for welcome message: %s", e)
-        return base
-
-    sources = [r["source_path"] for r in rows if r.get("source_path")]
-    if not sources:
-        return base
-
-    listing = "\n".join(f"\u2022 {s}" for s in sources)
-    return f"{base}\n\nI currently have information from:\n{listing}"
+                await turn_context.send_activity(
+                    MessageFactory.attachment(CardFactory.adaptive_card(build_root_card()))
+                )
 
 
 def _cr_to_dict(ref: ConversationReference) -> dict[str, Any]:
