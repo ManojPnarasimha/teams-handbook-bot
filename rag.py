@@ -9,7 +9,7 @@ import re
 
 import db
 from embeddings import embed
-from llm_client import generate_answer
+from llm_client import filter_relevant_chunks, generate_answer
 from memory import (
     append_message,
     get_recent_history,
@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 TOP_K = int(os.getenv("RAG_TOP_K", "5"))
 SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.55"))
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "1") == "1"
 
 
 # ---- Intent classification (cheap, keyword-based) --------------------------
@@ -51,6 +52,17 @@ _THANKS_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SMALLTALK_RE = re.compile(
+    r"^\s*((hi+|hello+|hey+|hola|yo|howdy)"
+    r"(\s+(there|team|bot|everyone|folks|all|guys|dude|tricongpt))?"
+    r"[\s,!]*)?"
+    r"(how\s+are\s+you(\s+doing)?|how'?s\s+it\s+going|how'?s\s+everything|"
+    r"how\s+do\s+you\s+do|what'?s\s+up)"
+    r"(\s+(today|there|bot|tricongpt|man|mate))?"
+    r"[\s,.!?]*$",
+    re.IGNORECASE,
+)
+
 _META_RE = re.compile(
     r"("
     r"\bwhat\s+can\s+you\s+do\b|"
@@ -77,34 +89,22 @@ _THANKS_REPLY = (
     "You're welcome! Let me know if there's anything else I can help you with."
 )
 
+_SMALLTALK_REPLY = (
+    "I'm doing great, thanks for asking! I'm here whenever you need help with "
+    "company policies, benefits, or HR questions."
+)
+
 
 async def _canned_meta_reply() -> str:
-    """Reply for 'what can you do / who are you / help' style questions.
-
-    Lists the documents currently ingested so the user immediately sees what
-    topics are actually answerable.
-    """
-    base = (
-        "I'm **TriconGPT**, an internal assistant that answers questions from "
-        "your company's documents (HR policies, handbooks, procedures, etc.).\n\n"
+    """Reply for 'what can you do / who are you / help' style questions."""
+    return (
+        "I'm **TriconGPT**, your internal assistant for company policies, "
+        "benefits, and HR procedures.\n\n"
         "You can ask me things like:\n"
         "• \"What's the laptop policy?\"\n"
         "• \"How many casual leaves do I get?\"\n"
-        "• \"What's the maternity leave process?\""
+        "• \"What's the maternity leave policy?\""
     )
-    try:
-        rows = await db.fetch_all(
-            "SELECT DISTINCT source_path FROM dbo.documents ORDER BY source_path"
-        )
-    except Exception as e:
-        logger.warning("Meta reply: failed to list sources: %s", e)
-        rows = []
-
-    sources = [r["source_path"] for r in rows if r.get("source_path")]
-    if sources:
-        listing = "\n".join(f"• {s}" for s in sources)
-        base += f"\n\nI currently have information from:\n{listing}"
-    return base
 
 
 async def _classify_intent(question: str) -> str | None:
@@ -117,6 +117,8 @@ async def _classify_intent(question: str) -> str | None:
         return None
     if _GREETING_RE.match(q):
         return _GREETING_REPLY
+    if _SMALLTALK_RE.match(q):
+        return _SMALLTALK_REPLY
     if _THANKS_RE.match(q):
         return _THANKS_REPLY
     if _META_RE.search(q):
@@ -180,6 +182,15 @@ async def answer_question(
         matches = []
 
     context_chunks = [m["content"] for m in matches if m.get("content")]
+
+    # Rerank: cosine similarity alone can surface a topically-similar but
+    # wrong-answer chunk (e.g. "certificate" matching certification-
+    # reimbursement content for a Bonafide-certificate question). One cheap
+    # LLM judge call over the already-retrieved top-K catches that before
+    # generation, at the cost of one extra LLM round trip per turn.
+    if RERANK_ENABLED and context_chunks:
+        keep = await asyncio.to_thread(filter_relevant_chunks, question, context_chunks)
+        context_chunks = [context_chunks[i] for i in keep]
 
     # Build history from summary + recent turns.
     summary = await get_summary(employee_id)

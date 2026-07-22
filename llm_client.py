@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -13,13 +14,30 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
 AZURE_OPENAI_CHAT_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "chat-mini")
+# gpt-5-mini is a reasoning-tier model that spends part of its token budget
+# "thinking" before writing visible output - "minimal" measured ~3x faster
+# (10-15s -> 3-5s) than the model's default effort, with zero reasoning
+# tokens used and no quality loss on tested questions (including multi-part
+# ones). Also incidentally removes the empty-completion risk from below,
+# since there's no reasoning budget left to exhaust.
+AZURE_OPENAI_REASONING_EFFORT = os.getenv("AZURE_OPENAI_REASONING_EFFORT", "minimal")
 
 # Groq (fallback)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-# Fallback answer when retrieval finds nothing.
-no_context_message = "I couldn't find anything relevant to that in our documents. Try rephrasing, or contact your HR team for further help."
+# Fallback answer when retrieval finds nothing. Covers two different cases
+# with one honest message rather than presuming which one applies: a real
+# policy question our documents don't cover (rephrasing/HR genuinely helps),
+# and a question outside this bot's scope entirely (e.g. "write me code"),
+# where the old wording's "try rephrasing, contact HR" advice was actively
+# wrong. See rag.py's intent classifier for the cheap greeting/thanks/meta
+# cases that skip this path entirely.
+no_context_message = "I couldn't find anything about that in our company documents. I'm built specifically for company policy, benefits, and HR questions — if that's what this was, try rephrasing or check with your HR team; otherwise, this isn't something I can help with."
+
+# Shown when Azure OpenAI's own content filter blocks a request (jailbreak /
+# hate / violence / self-harm / sexual categories) - see ContentFilterBlocked.
+blocked_message = "I can't help with that request. If you think this is a mistake, please contact your HR team."
 
 # System prompt: grounded, safe, and concise.
 SYSTEM_PROMPT_TEMPLATE = """You are an internal company assistant that helps employees find information from company documents (HR policies, handbooks, guides, etc.).
@@ -41,6 +59,16 @@ CONTEXT:
 
 class LLMError(Exception):
     """Raised for recoverable LLM failures."""
+
+
+class ContentFilterBlocked(LLMError):
+    """Azure OpenAI's built-in content filter rejected the request.
+
+    Distinct from other LLMErrors: this must NOT trigger a fallback to
+    another provider, since a less-safe provider (e.g. Groq, which has no
+    equivalent filter configured here) could simply answer the blocked
+    request anyway, defeating the point of the block.
+    """
 
 
 # ---- Message assembly ------------------------------------------------------
@@ -65,7 +93,7 @@ def _build_messages(
 # ---- Providers -------------------------------------------------------------
 
 def _call_azure_openai(messages: list[dict]) -> str:
-    from openai import AzureOpenAI
+    from openai import AzureOpenAI, BadRequestError
 
     if not (AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY):
         raise LLMError("Azure OpenAI is not configured.")
@@ -80,6 +108,7 @@ def _call_azure_openai(messages: list[dict]) -> str:
             model=AZURE_OPENAI_CHAT_DEPLOYMENT,
             messages=messages,  # type: ignore[arg-type]
             max_completion_tokens=2000,
+            reasoning_effort=AZURE_OPENAI_REASONING_EFFORT,
         )
         content = (response.choices[0].message.content or "").strip()
         if not content:
@@ -94,6 +123,15 @@ def _call_azure_openai(messages: list[dict]) -> str:
         return content
     except LLMError:
         raise
+    except BadRequestError as e:
+        if getattr(e, "code", None) == "content_filter":
+            categories = {}
+            if isinstance(e.body, dict):
+                categories = e.body.get("innererror", {}).get("content_filter_result", {})
+            logger.warning("Azure OpenAI content filter blocked request: %s", categories)
+            raise ContentFilterBlocked("Blocked by Azure OpenAI content filter") from e
+        logger.error("Azure OpenAI call failed: %s", e)
+        raise LLMError("Azure OpenAI call failed") from e
     except Exception as e:
         logger.error("Azure OpenAI call failed: %s", e)
         raise LLMError("Azure OpenAI call failed") from e
@@ -141,6 +179,10 @@ def _run_with_fallback(messages: list[dict]) -> str:
     for name, fn in providers:
         try:
             return fn(messages)
+        except ContentFilterBlocked:
+            # Do not fall through to another provider - a less-safe fallback
+            # could simply answer the blocked request anyway.
+            raise
         except LLMError as e:
             logger.warning("%s failed, trying next provider: %s", name, e)
             last_err = e
@@ -157,6 +199,8 @@ def generate_answer(
     messages = _build_messages(context_chunks, history, question)
     try:
         return _run_with_fallback(messages)
+    except ContentFilterBlocked:
+        return blocked_message
     except LLMError as e:
         logger.error("All LLM providers failed: %s", e)
         return "The assistant is temporarily unavailable. Please try again in a moment."
@@ -165,3 +209,48 @@ def generate_answer(
 def summarise(messages: list[dict]) -> str:
     """Direct chat completion used by memory.py for running summaries."""
     return _run_with_fallback(messages)
+
+
+_RERANK_SYSTEM_PROMPT = (
+    "You judge which numbered passages actually contain information that "
+    "helps answer the question. Reply with ONLY a comma-separated list of "
+    "the relevant passage numbers (e.g. \"0, 2\"), or the single word NONE "
+    "if none of them are relevant. No explanation, no other text."
+)
+
+
+def filter_relevant_chunks(question: str, chunks: list[str]) -> list[int]:
+    """Return indices of chunks that actually help answer the question.
+
+    Cosine similarity alone can match on vocabulary overlap without real
+    topical relevance. This is a cheap one-call LLM judge over the already-retrieved
+    top-K, not a new retrieval system.
+
+    Fails open (keeps every chunk) on any error or unparseable response - a
+    broken reranker should degrade to pre-rerank behavior, not block answers.
+    """
+    if not chunks:
+        return []
+
+    numbered = "\n\n".join(f"[{i}] {c}" for i, c in enumerate(chunks))
+    messages = [
+        {"role": "system", "content": _RERANK_SYSTEM_PROMPT},
+        {"role": "user", "content": f"QUESTION: {question}\n\nPASSAGES:\n{numbered}"},
+    ]
+
+    try:
+        raw = _run_with_fallback(messages)
+    except LLMError as e:
+        logger.warning("Chunk reranking failed, keeping all retrieved chunks: %s", e)
+        return list(range(len(chunks)))
+
+    if raw.strip().upper().startswith("NONE"):
+        return []
+
+    indices = sorted({int(m) for m in re.findall(r"\d+", raw)})
+    if not indices:
+        logger.warning("Could not parse reranker output %r, keeping all chunks", raw)
+        return list(range(len(chunks)))
+
+    valid = [i for i in indices if 0 <= i < len(chunks)]
+    return valid if valid else list(range(len(chunks)))
