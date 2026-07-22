@@ -101,6 +101,16 @@ class OrgBot(ActivityHandler):
             return
 
         text = (activity.text or "").strip()
+        if not text and isinstance(value, dict):
+            # Real Teams echoes an imBack card action as a normal text
+            # message automatically. Other surfaces (Web Chat/Direct Line,
+            # including the Azure portal's "Test in Web Chat" pane) don't
+            # implement that Teams-only extension - they just submit the
+            # raw card data with no text. Recover the question here so quick
+            # prompts also work outside Teams.
+            imback = value.get("msteams", {})
+            if isinstance(imback, dict) and imback.get("type") == "imBack":
+                text = str(imback.get("value", "")).strip()
         if not text:
             return
 
