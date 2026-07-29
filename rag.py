@@ -81,7 +81,7 @@ _META_RE = re.compile(
 
 
 _GREETING_REPLY = (
-    "Hi! I'm TriconGPT — your internal handbook assistant. "
+    "Hi! I'm TriVA — your internal handbook assistant. "
     "Ask me anything about company policies, benefits, or procedures."
 )
 
@@ -98,7 +98,7 @@ _SMALLTALK_REPLY = (
 async def _canned_meta_reply() -> str:
     """Reply for 'what can you do / who are you / help' style questions."""
     return (
-        "I'm **TriconGPT**, your internal assistant for company policies, "
+        "I'm **TriVA**, your internal assistant for company policies, "
         "benefits, and HR procedures.\n\n"
         "You can ask me things like:\n"
         "• \"What's the laptop policy?\"\n"

@@ -49,7 +49,7 @@
   <rect x="0" y="0" width="1830" height="1560" fill="#FCFDFE"/>
 
   <!-- title -->
-  <text x="915" y="38" text-anchor="middle" font-size="27" font-weight="800" fill="#0F172A">TriconGPT — System Architecture</text>
+  <text x="915" y="38" text-anchor="middle" font-size="27" font-weight="800" fill="#0F172A">TriVA — System Architecture</text>
   <text x="915" y="61" text-anchor="middle" font-size="14" fill="#5A5A72">Retrieval-Augmented Generation bot for Microsoft Teams · FastAPI on Render · Azure SQL (native VECTOR) · Azure OpenAI · SharePoint ingestion</text>
 
   <!-- ================= ROW 1: client / channel / triggers ================= -->

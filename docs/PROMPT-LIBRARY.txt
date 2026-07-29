@@ -1,5 +1,5 @@
 ================================================================================
-TriconGPT — Prompt Library
+TriVA — Prompt Library
 ================================================================================
 
 These are the LLM instruction prompts used in this project to make the chatbot

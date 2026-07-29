@@ -20,9 +20,13 @@ CATEGORIES: list[dict] = [
         "title": "Employment documents & letters",
         "prompts": [
             {
+                "label": "Experience letter",
+                "question": "How do I get an experience letter?",
+            },
+            {
                 "label": "Resignation process",
                 "question": "What's the resignation and separation process?",
-            },
+            }
         ],
     },
     {
@@ -119,7 +123,7 @@ CATEGORIES: list[dict] = [
 _CATEGORIES_BY_ID = {c["id"]: c for c in CATEGORIES}
 
 
-DEFAULT_GREETING = "Hi! I'm TriconGPT — pick a topic below or just type your question."
+DEFAULT_GREETING = "Hi! I'm TriVA — pick a topic below or just type your question."
 
 
 def build_root_card(greeting: str = DEFAULT_GREETING) -> dict:
