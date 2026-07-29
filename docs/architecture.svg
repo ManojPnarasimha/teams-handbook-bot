@@ -1,0 +1,302 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1830 1560" font-family="'Segoe UI','Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+
+    <marker id="a-indigo" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5B5FC7"/>
+    </marker>
+    <marker id="a-slate" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="a-teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0D9488"/>
+    </marker>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0078D4"/>
+    </marker>
+    <marker id="a-amber" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#D97706"/>
+    </marker>
+    <marker id="a-gray" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6B7280"/>
+    </marker>
+
+    <style>
+      .box{ filter:url(#shadow); }
+      .box-client{ fill:#EEF0FC; stroke:#5B5FC7; stroke-width:2; }
+      .box-app{ fill:#EEF2F6; stroke:#334155; stroke-width:2; }
+      .box-azure{ fill:#E7F3FF; stroke:#0078D4; stroke-width:2; }
+      .box-groq{ fill:#FEF3E2; stroke:#D97706; stroke-width:2; }
+      .box-sp{ fill:#E6FAF8; stroke:#0D9488; stroke-width:2; }
+      .box-trig{ fill:#E9EBEF; stroke:#6B7280; stroke-width:2; }
+      .title{ font-weight:700; font-size:15px; fill:#0F172A; }
+      .title-sm{ font-weight:700; font-size:13.5px; fill:#0F172A; }
+      .sub{ font-size:11.5px; fill:#334155; }
+      .sub-w{ font-size:11.5px; fill:#F8FAFC; }
+      .note{ font-style:italic; font-size:10.5px; fill:#64748B; }
+      .mono{ font-family:Consolas,'Courier New',monospace; font-size:12px; fill:#0F172A; }
+      .lane-h{ font-weight:700; font-size:12px; letter-spacing:0.5px; }
+      .lbl{ font-size:10.5px; fill:#475569; }
+      .lbl-b{ font-size:10.5px; fill:#1D4ED8; }
+      .lbl-a{ font-size:10.5px; fill:#B45309; }
+      .lbl-t{ font-size:10.5px; fill:#0F766E; }
+    </style>
+  </defs>
+
+  <!-- background -->
+  <rect x="0" y="0" width="1830" height="1560" fill="#FCFDFE"/>
+
+  <!-- title -->
+  <text x="915" y="38" text-anchor="middle" font-size="27" font-weight="800" fill="#0F172A">TriVA — System Architecture</text>
+  <text x="915" y="61" text-anchor="middle" font-size="14" fill="#5A5A72">Retrieval-Augmented Generation bot for Microsoft Teams · FastAPI on Render · Azure SQL (native VECTOR) · Azure OpenAI · SharePoint ingestion</text>
+
+  <!-- ================= ROW 1: client / channel / triggers ================= -->
+  <g class="box box-client">
+    <rect x="50" y="90" width="260" height="80" rx="12"/>
+  </g>
+  <text x="180" y="122" text-anchor="middle" class="title-sm">Microsoft Teams</text>
+  <text x="180" y="143" text-anchor="middle" class="sub">Employee chat surface</text>
+  <text x="180" y="158" text-anchor="middle" class="sub">(1:1 chat + adaptive cards)</text>
+
+  <g class="box box-client">
+    <rect x="380" y="90" width="260" height="80" rx="12"/>
+  </g>
+  <text x="510" y="122" text-anchor="middle" class="title-sm">Azure Bot Service</text>
+  <text x="510" y="143" text-anchor="middle" class="sub">Channel connector</text>
+  <text x="510" y="158" text-anchor="middle" class="sub">Authorization header verification</text>
+
+  <g class="box box-trig">
+    <rect x="1180" y="90" width="260" height="80" rx="12"/>
+  </g>
+  <text x="1310" y="118" text-anchor="middle" class="title-sm">External Scheduler</text>
+  <text x="1310" y="139" text-anchor="middle" class="sub">Azure Container Apps Job /</text>
+  <text x="1310" y="154" text-anchor="middle" class="sub">GitHub Actions / cron-job.org</text>
+
+  <g class="box box-trig">
+    <rect x="1470" y="90" width="280" height="80" rx="12"/>
+  </g>
+  <text x="1610" y="118" text-anchor="middle" class="title-sm">Manual CLI</text>
+  <text x="1610" y="139" text-anchor="middle" class="sub">python ingest.py --backfill /</text>
+  <text x="1610" y="154" text-anchor="middle" class="sub">--sync / --file / --delete</text>
+
+  <!-- ================= APP CONTAINER ================= -->
+  <rect x="30" y="195" width="1740" height="785" rx="18" fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="50" y="216" class="lane-h" fill="#475569">RENDER — FASTAPI WEB SERVICE  (this repository)</text>
+  <line x1="900" y1="228" x2="900" y2="960" stroke="#CBD5E1" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="480" y="234" text-anchor="middle" class="lane-h" fill="#5B5FC7">CONVERSATIONAL TURN — per Teams message</text>
+  <text x="1330" y="234" text-anchor="middle" class="lane-h" fill="#0D9488">DOCUMENT INGESTION — SharePoint sync</text>
+
+  <!-- L1 app.py (routes) -->
+  <g class="box box-app"><rect x="70" y="246" width="380" height="76" rx="10"/></g>
+  <text x="260" y="270" text-anchor="middle" class="title-sm">app.py</text>
+  <text x="260" y="289" text-anchor="middle" class="sub">OrgBot.on_message_activity()</text>
+  <text x="260" y="305" text-anchor="middle" class="sub">POST /api/messages</text>
+
+  <!-- L2 quick_prompts.py -->
+  <g class="box box-app"><rect x="470" y="246" width="380" height="76" rx="10"/></g>
+  <text x="660" y="270" text-anchor="middle" class="title-sm">quick_prompts.py</text>
+  <text x="660" y="289" text-anchor="middle" class="sub">Adaptive Card topic menu</text>
+  <text x="660" y="305" text-anchor="middle" class="sub">(root + category cards)</text>
+
+  <!-- L3 rag.py -->
+  <g class="box box-app"><rect x="70" y="340" width="780" height="140" rx="10"/></g>
+  <text x="90" y="364" class="title-sm">rag.py — answer_question()</text>
+  <text x="90" y="384" class="sub">① Intent gate: regex greeting / smalltalk / thanks / meta → canned reply, RAG skipped</text>
+  <text x="90" y="401" class="sub">② embed(question) via embeddings.py</text>
+  <text x="90" y="418" class="sub">③ VECTOR_DISTANCE cosine search on dbo.documents — TOP_K=5, similarity ≥ 0.55</text>
+  <text x="90" y="435" class="sub">④ filter_relevant_chunks() LLM rerank of retrieved chunks</text>
+  <text x="90" y="452" class="sub">⑤ generate_answer() with conversation history</text>
+  <text x="90" y="470" class="note">also calls llm_client.py directly for steps ④ and ⑤</text>
+
+  <!-- L6 embeddings.py -->
+  <g class="box box-app"><rect x="70" y="498" width="380" height="76" rx="10"/></g>
+  <text x="260" y="524" text-anchor="middle" class="title-sm">embeddings.py</text>
+  <text x="260" y="543" text-anchor="middle" class="sub">Azure OpenAI text-embedding-3-small</text>
+  <text x="260" y="559" text-anchor="middle" class="sub">@ 768 dims (batched)</text>
+
+  <!-- L4 memory.py -->
+  <g class="box box-app"><rect x="470" y="498" width="380" height="76" rx="10"/></g>
+  <text x="660" y="521" text-anchor="middle" class="title-sm">memory.py</text>
+  <text x="660" y="540" text-anchor="middle" class="sub">employees/conversations · short-term history</text>
+  <text x="660" y="556" text-anchor="middle" class="sub">rolling summary every 20 turns</text>
+
+  <!-- L5 llm_client.py -->
+  <g class="box box-app"><rect x="70" y="594" width="780" height="94" rx="10"/></g>
+  <text x="90" y="618" class="title-sm">llm_client.py</text>
+  <text x="90" y="638" class="sub">Azure OpenAI (primary) → Groq (fallback) · grounding + anti-injection system prompt</text>
+  <text x="90" y="655" class="sub">Content-filter blocks return a fixed message and never fall through to Groq</text>
+  <text x="90" y="675" class="note">used for rerank(), generate_answer() and memory.py's summarise()</text>
+
+  <!-- R1 app.py (sync endpoint) -->
+  <g class="box box-app"><rect x="930" y="246" width="780" height="76" rx="10"/></g>
+  <text x="950" y="270" class="title-sm">app.py</text>
+  <text x="950" y="289" class="sub">POST /internal/sharepoint-sync — requires X-Sync-Secret header</text>
+  <text x="950" y="305" class="sub">gated by SCHEDULED_SYNC_ENABLED · runs ingestion via BackgroundTasks</text>
+
+  <!-- R2 ingest.py -->
+  <g class="box box-app"><rect x="930" y="340" width="780" height="118" rx="10"/></g>
+  <text x="950" y="364" class="title-sm">ingest.py</text>
+  <text x="950" y="384" class="sub">sync_from_sharepoint() / _backfill() / _ingest_files() — diff vs DB by source_updated_at</text>
+  <text x="950" y="401" class="sub">process_file(): extract_layout() → chunk_by_structure() (heading/table aware, overlap) →</text>
+  <text x="950" y="418" class="sub">embed_many() → delete-then-insert</text>
+  <text x="950" y="438" class="note">embed_many() calls embeddings.py — shared with the conversational-turn lane</text>
+
+  <!-- R3 sharepoint_client.py -->
+  <g class="box box-app"><rect x="930" y="478" width="380" height="88" rx="10"/></g>
+  <text x="1120" y="502" text-anchor="middle" class="title-sm">sharepoint_client.py</text>
+  <text x="1120" y="521" text-anchor="middle" class="sub">MSAL client-credentials auth +</text>
+  <text x="1120" y="537" text-anchor="middle" class="sub">Graph list_files() / download_file()</text>
+
+  <!-- R4 document_extractor.py -->
+  <g class="box box-app"><rect x="1330" y="478" width="380" height="88" rx="10"/></g>
+  <text x="1520" y="502" text-anchor="middle" class="title-sm">document_extractor.py</text>
+  <text x="1520" y="521" text-anchor="middle" class="sub">PyMuPDF (primary, in-process) →</text>
+  <text x="1520" y="537" text-anchor="middle" class="sub">Azure Document Intelligence OCR (fallback, &lt;200 chars)</text>
+
+  <!-- ================= ZONE A: Azure SQL ================= -->
+  <g class="box box-azure"><rect x="60" y="1000" width="500" height="400" rx="14"/></g>
+  <text x="90" y="1032" class="title" fill="#004578">Azure SQL Database</text>
+  <text x="90" y="1052" class="sub" fill="#0369A1">native VECTOR(768) · VECTOR_DISTANCE cosine search</text>
+  <line x1="90" y1="1064" x2="530" y2="1064" stroke="#BFE0FA" stroke-width="1.5"/>
+  <text x="90" y="1092" class="mono">dbo.employees</text>
+  <text x="90" y="1108" class="sub">aad_object_id, name, email</text>
+  <text x="90" y="1136" class="mono">dbo.documents</text>
+  <text x="90" y="1152" class="sub">source_path, content, content_hash UNIQUE,</text>
+  <text x="90" y="1167" class="sub">embedding VECTOR(768)</text>
+  <text x="90" y="1195" class="mono">dbo.conversations</text>
+  <text x="90" y="1211" class="sub">employee_id, channel</text>
+  <text x="90" y="1239" class="mono">dbo.messages</text>
+  <text x="90" y="1255" class="sub">conversation_id, role, content</text>
+  <text x="90" y="1283" class="mono">dbo.memory_summaries</text>
+  <text x="90" y="1299" class="sub">employee_id, summary_text</text>
+  <text x="90" y="1327" class="mono">dbo.conversation_references</text>
+  <text x="90" y="1343" class="sub">employee_id, reference JSON</text>
+  <text x="90" y="1358" class="note">(proactive messaging)</text>
+
+  <!-- ================= ZONE B: external AI / systems (2x2) ================= -->
+  <g class="box box-azure"><rect x="600" y="1000" width="560" height="180" rx="14"/></g>
+  <text x="880" y="1034" text-anchor="middle" class="title" fill="#004578">Azure OpenAI</text>
+  <text x="880" y="1058" text-anchor="middle" class="sub" fill="#0369A1">Chat: gpt-4o-mini / gpt-5-mini deployment</text>
+  <text x="880" y="1076" text-anchor="middle" class="sub" fill="#0369A1">reasoning_effort = minimal</text>
+  <text x="880" y="1100" text-anchor="middle" class="sub" fill="#0369A1">Embeddings: text-embedding-3-small</text>
+  <text x="880" y="1150" text-anchor="middle" class="note">primary LLM + sole embeddings provider</text>
+
+  <g class="box box-groq"><rect x="1210" y="1000" width="560" height="180" rx="14"/></g>
+  <text x="1490" y="1034" text-anchor="middle" class="title" fill="#92400E">Groq — fallback</text>
+  <text x="1490" y="1058" text-anchor="middle" class="sub" fill="#92400E">llama-3.3-70b-versatile</text>
+  <text x="1490" y="1082" text-anchor="middle" class="sub" fill="#92400E">used only when Azure OpenAI call fails</text>
+  <text x="1490" y="1130" text-anchor="middle" class="note">never used for content-filter blocks —</text>
+  <text x="1490" y="1146" text-anchor="middle" class="note">no equivalent safety filter configured here</text>
+
+  <g class="box box-azure"><rect x="600" y="1220" width="560" height="180" rx="14"/></g>
+  <text x="880" y="1254" text-anchor="middle" class="title" fill="#004578">Azure Document Intelligence</text>
+  <text x="880" y="1278" text-anchor="middle" class="sub" fill="#0369A1">prebuilt-layout model, OCR</text>
+  <text x="880" y="1326" text-anchor="middle" class="note">scanned / image-only PDFs only —</text>
+  <text x="880" y="1342" text-anchor="middle" class="note">skipped when PyMuPDF finds embedded text</text>
+
+  <g class="box box-sp"><rect x="1210" y="1220" width="560" height="180" rx="14"/></g>
+  <text x="1490" y="1254" text-anchor="middle" class="title" fill="#0F766E">Microsoft SharePoint</text>
+  <text x="1490" y="1278" text-anchor="middle" class="sub" fill="#0F766E">Document library</text>
+  <text x="1490" y="1326" text-anchor="middle" class="note">accessed via Microsoft Graph API,</text>
+  <text x="1490" y="1342" text-anchor="middle" class="note">Sites.Selected permission on one site</text>
+
+  <!-- ================= ARROWS ================= -->
+
+  <!-- Teams <-> Bot Service -->
+  <line x1="310" y1="130" x2="380" y2="130" stroke="#5B5FC7" stroke-width="2.25" marker-end="url(#a-indigo)" marker-start="url(#a-indigo)"/>
+
+  <!-- Bot Service -> app.py -->
+  <path d="M510,170 Q380,215 260,246" fill="none" stroke="#5B5FC7" stroke-width="2.25" marker-end="url(#a-indigo)"/>
+
+  <!-- External Scheduler -> sync endpoint -->
+  <path d="M1310,170 Q1315,205 1320,246" fill="none" stroke="#6B7280" stroke-width="2.25" marker-end="url(#a-gray)"/>
+
+  <!-- Manual CLI -> ingest.py (dashed, bypasses HTTP) -->
+  <path d="M1750,170 L1755,170 L1755,350 L1712,350" fill="none" stroke="#6B7280" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-gray)"/>
+  <text x="1584" y="290" class="lbl" transform="rotate(90 1584,290)" text-anchor="middle">direct — bypasses HTTP</text>
+
+  <!-- L1 -> L2 -->
+  <line x1="450" y1="284" x2="468" y2="284" stroke="#334155" stroke-width="2" marker-end="url(#a-slate)"/>
+  <!-- L1 -> L3, L2 -> L3 -->
+  <line x1="260" y1="322" x2="260" y2="338" stroke="#334155" stroke-width="2" marker-end="url(#a-slate)"/>
+  <line x1="660" y1="322" x2="660" y2="338" stroke="#334155" stroke-width="2" marker-end="url(#a-slate)"/>
+  <!-- L3 -> L6, L3 -> L4 -->
+  <line x1="260" y1="480" x2="260" y2="496" stroke="#334155" stroke-width="2" marker-end="url(#a-slate)"/>
+  <line x1="660" y1="480" x2="660" y2="496" stroke="#334155" stroke-width="2" marker-end="url(#a-slate)"/>
+  <!-- L6 -> L5, L4 -> L5 -->
+  <line x1="260" y1="574" x2="260" y2="592" stroke="#334155" stroke-width="2" marker-end="url(#a-slate)"/>
+  <line x1="660" y1="574" x2="660" y2="592" stroke="#334155" stroke-width="2" marker-end="url(#a-slate)"/>
+  <text x="668" y="588" class="lbl">summarise()</text>
+
+  <!-- R1 -> R2 -->
+  <line x1="1320" y1="322" x2="1320" y2="338" stroke="#0D9488" stroke-width="2" marker-end="url(#a-teal)"/>
+  <!-- R2 -> R3, R2 -> R4 -->
+  <line x1="1120" y1="458" x2="1120" y2="476" stroke="#0D9488" stroke-width="2" marker-end="url(#a-teal)"/>
+  <line x1="1520" y1="458" x2="1520" y2="476" stroke="#0D9488" stroke-width="2" marker-end="url(#a-teal)"/>
+
+  <!-- R3 -> SharePoint (far-right channel) -->
+  <path d="M1120,566 L1120,815 L1795,815 L1795,1310 L1772,1310" fill="none" stroke="#0D9488" stroke-width="2" marker-end="url(#a-teal)"/>
+  <text x="1600" y="805" class="lbl-t">list_files() / download_file()</text>
+
+  <!-- R4 -> Azure Document Intelligence (dashed, OCR fallback) -->
+  <path d="M1520,566 L1520,845 L580,845 L580,1310 L598,1310" fill="none" stroke="#0D9488" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-teal)"/>
+  <text x="760" y="838" class="lbl-t">OCR fallback (&lt;200 chars)</text>
+
+  <!-- L3 -> Azure SQL (vector search) -->
+  <path d="M70,410 L40,410 L40,995 L150,995 L150,1000" fill="none" stroke="#0078D4" stroke-width="2" marker-end="url(#a-blue)"/>
+  <text x="46" y="700" class="lbl-b" transform="rotate(-90 46,700)" text-anchor="middle">VECTOR_DISTANCE search</text>
+
+  <!-- L4 -> Azure SQL (employee/conversation/message tables) -->
+  <path d="M850,536 L875,536 L875,985 L350,985 L350,1000" fill="none" stroke="#0078D4" stroke-width="2" marker-end="url(#a-blue)"/>
+  <text x="360" y="981" class="lbl-b">history + summary</text>
+
+  <!-- R2 -> Azure SQL (upsert chunks) -->
+  <path d="M930,399 L910,399 L910,970 L520,970 L520,1000" fill="none" stroke="#0078D4" stroke-width="2" marker-end="url(#a-blue)"/>
+  <text x="530" y="955" class="lbl-b">upsert chunks (delete + insert)</text>
+
+  <!-- L6 -> Azure OpenAI (embeddings) -->
+  <path d="M70,536 L50,536 L50,960 L880,960 L880,1000" fill="none" stroke="#0078D4" stroke-width="2" marker-end="url(#a-blue)"/>
+
+  <!-- L5 -> Azure OpenAI (primary) -->
+  <path d="M700,688 L700,1000" fill="none" stroke="#0078D4" stroke-width="2.25" marker-end="url(#a-blue)"/>
+
+  <!-- L5 -> Groq (fallback, dashed) -->
+  <path d="M800,688 L800,825 L1490,825 L1490,1000" fill="none" stroke="#D97706" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a-amber)"/>
+  <text x="1145" y="818" class="lbl-a">fallback on Azure OpenAI failure</text>
+
+  <!-- ================= LEGEND ================= -->
+  <line x1="30" y1="1425" x2="1800" y2="1425" stroke="#E2E8F0" stroke-width="1.5"/>
+  <text x="30" y="1452" font-weight="700" font-size="12" fill="#334155">LEGEND</text>
+
+  <rect x="115" y="1440" width="16" height="16" rx="3" class="box-client"/>
+  <text x="138" y="1453" class="lbl">Client / channel</text>
+
+  <rect x="270" y="1440" width="16" height="16" rx="3" class="box-app"/>
+  <text x="293" y="1453" class="lbl">App code (this repo)</text>
+
+  <rect x="460" y="1440" width="16" height="16" rx="3" class="box-azure"/>
+  <text x="483" y="1453" class="lbl">Azure data / AI service</text>
+
+  <rect x="660" y="1440" width="16" height="16" rx="3" class="box-groq"/>
+  <text x="683" y="1453" class="lbl">Third-party fallback (Groq)</text>
+
+  <rect x="880" y="1440" width="16" height="16" rx="3" class="box-sp"/>
+  <text x="903" y="1453" class="lbl">Microsoft 365 (SharePoint)</text>
+
+  <rect x="1090" y="1440" width="16" height="16" rx="3" class="box-trig"/>
+  <text x="1113" y="1453" class="lbl">External trigger / CLI</text>
+
+  <line x1="1300" y1="1448" x2="1340" y2="1448" stroke="#334155" stroke-width="2.25"/>
+  <text x="1348" y="1453" class="lbl">primary flow</text>
+
+  <line x1="1470" y1="1448" x2="1510" y2="1448" stroke="#D97706" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="1518" y="1453" class="lbl">fallback / secondary path</text>
+
+  <!-- ================= FOOTER NOTES ================= -->
+  <line x1="30" y1="1485" x2="1800" y2="1485" stroke="#E2E8F0" stroke-width="1.5"/>
+  <text x="30" y="1508" font-weight="700" font-size="12" fill="#334155">BEHAVIOURAL GUARANTEES</text>
+  <text x="30" y="1528" class="sub">Intent gate skips embedding + vector search + LLM calls for greetings/meta/thanks · Answers are grounded only in retrieved context + history, never outside knowledge</text>
+  <text x="30" y="1546" class="sub">No-context short-circuit avoids hallucinated answers · Azure OpenAI content-filter blocks never fall through to Groq · Ingestion and chat share one Azure SQL store, fully async end-to-end</text>
+</svg>

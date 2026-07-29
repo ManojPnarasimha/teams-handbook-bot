@@ -1,0 +1,30 @@
+# ---- Web / bot framework ----
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+botbuilder-core>=4.16.0
+botbuilder-integration-aiohttp>=4.16.0
+botbuilder-schema>=4.16.0
+
+# ---- Azure SQL Database ----
+# Needs Microsoft ODBC Driver 18 for SQL Server on the host (see README).
+aioodbc>=0.5.0
+pyodbc>=5.1.0
+
+# ---- Azure OpenAI (chat + embeddings) ----
+openai>=1.51.0
+
+# ---- Azure Document Intelligence (OCR fallback) ----
+azure-ai-documentintelligence>=1.0.0
+
+# ---- PDF text extraction (primary; falls back to Azure DI OCR) ----
+pymupdf>=1.24.0
+
+# ---- SharePoint (Microsoft Graph via MSAL) ----
+msal>=1.31.0
+requests>=2.32.0
+
+# ---- LLM fallback ----
+groq>=0.11.0
+
+# ---- Utilities ----
+python-dotenv>=1.0.1
