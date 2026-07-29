@@ -178,7 +178,7 @@ _bot = OrgBot()
 
 
 # FastAPI app
-app = FastAPI(title="TriconGPT", version="1.0.0")
+app = FastAPI(title="TriVA", version="1.0.0")
 
 
 @app.get("/healthz")

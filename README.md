@@ -1,4 +1,6 @@
-# TriconGPT — Internal Org Chatbot
+# TriVA — Internal Org Chatbot
+
+**TriVA** = **Tri**con **V**irtual **A**ssistant
 
 Retrieval-Augmented Generation (RAG) chatbot that answers employees' HR and
 company-policy questions inside Microsoft Teams, grounded only in approved

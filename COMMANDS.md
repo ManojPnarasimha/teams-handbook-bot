@@ -1,4 +1,4 @@
-# TriconGPT — Command Reference
+# TriVA — Command Reference
 
 End-to-end runbook for the Azure-backed stack. Follow section 0 the first
 time, then use sections 1–8 as needed.

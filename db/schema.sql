@@ -1,4 +1,4 @@
--- Azure SQL Database schema for TriconGPT.
+-- Azure SQL Database schema for TriVA.
 --
 -- Apply once with:
 --   sqlcmd -S <server>.database.windows.net -d <db> -U <user> -P <pwd> -N -C -i db/schema.sql
